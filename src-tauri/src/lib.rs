@@ -12,6 +12,7 @@ struct WorkspaceInfo {
     bus_root: String,
     worktree_root: String,
     provider_config_path: String,
+    user_guide_path: String,
     codex_cli: Option<String>,
     claude_cli: Option<String>,
 }
@@ -330,6 +331,7 @@ fn workspace_info() -> Result<WorkspaceInfo, String> {
         bus_root: bus_root()?.to_string_lossy().to_string(),
         worktree_root: worktree_root()?.to_string_lossy().to_string(),
         provider_config_path: provider_config_path().to_string_lossy().to_string(),
+        user_guide_path: hub_root()?.join("USER_GUIDE_RU.md").to_string_lossy().to_string(),
         codex_cli: resolve_codex_cli(),
         claude_cli: find_command("claude"),
     })

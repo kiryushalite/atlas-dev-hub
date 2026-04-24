@@ -23,6 +23,7 @@ type WorkspaceInfo = {
   bus_root: string;
   worktree_root: string;
   provider_config_path: string;
+  user_guide_path: string;
   codex_cli: string | null;
   claude_cli: string | null;
 };
@@ -638,6 +639,13 @@ export default function App() {
 
       <footer>
         <span>{notice}</span>
+        <button
+          className="link-button"
+          onClick={() => openWorkspacePath(workspace?.user_guide_path)}
+          disabled={!workspace}
+        >
+          guide
+        </button>
         <button
           className="link-button"
           onClick={() => openWorkspacePath(workspace?.provider_config_path)}

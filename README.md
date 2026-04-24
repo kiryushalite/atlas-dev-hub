@@ -26,3 +26,7 @@ From the workspace root, run:
 ```powershell
 .\Start Atlas Dev Hub.cmd
 ```
+
+## Russian Guide
+
+See `USER_GUIDE_RU.md` for the full migration and connection guide.

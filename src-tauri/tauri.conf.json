@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Atlas Dev Hub",
+  "version": "0.1.0",
+  "identifier": "dev.atlas.hub.local",
+  "build": {
+    "beforeDevCommand": "npm run dev -- --port 1430",
+    "devUrl": "http://127.0.0.1:1430",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Atlas Dev Hub",
+        "width": 1440,
+        "height": 920,
+        "minWidth": 1120,
+        "minHeight": 760
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico"]
+  }
+}

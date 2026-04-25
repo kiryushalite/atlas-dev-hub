@@ -410,6 +410,10 @@ fn openrouter_model(provider: &str, model: &str) -> String {
     }
 }
 
+fn uses_kimi_k2_5_request_rules(provider: &str, model: &str) -> bool {
+    provider == "kimi" && model.trim().to_lowercase().starts_with("kimi-k2.5")
+}
+
 fn chat_url(base_url: &str) -> String {
     let trimmed = base_url.trim().trim_end_matches('/');
     if trimmed.ends_with("/chat/completions") {
@@ -433,10 +437,18 @@ fn truncate_error(text: &str) -> String {
 }
 
 fn provider_user_error(provider: &str, status: reqwest::StatusCode, body: &str) -> String {
+    let body_lower = body.to_lowercase();
     match status.as_u16() {
         401 | 403 => format!(
             "{provider}: API вернул {status}. Ключ найден, но маршрут или тип ключа не подходит для этого API."
         ),
+        429 if body_lower.contains("insufficient balance")
+            || body_lower.contains("exceeded_current_quota_error") =>
+        {
+            format!(
+                "{provider}: API вернул 429. Ключ принят, но у API-аккаунта провайдера нет баланса или доступной квоты. Проверь баланс API или сохрани другой ключ."
+            )
+        }
         429 => format!(
             "{provider}: API вернул 429. Ключ найден, backend дошёл до провайдера, но сейчас лимит/квота."
         ),
@@ -1190,7 +1202,7 @@ async fn ask_provider(provider: String, prompt: String) -> Result<ProviderReply,
 
     let mut failures = Vec::new();
     for (index, (base_url, model)) in attempts.into_iter().enumerate() {
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": model,
             "messages": [
                 {
@@ -1201,9 +1213,14 @@ async fn ask_provider(provider: String, prompt: String) -> Result<ProviderReply,
                     "role": "user",
                     "content": prompt
                 }
-            ],
-            "temperature": 0.2
+            ]
         });
+        if uses_kimi_k2_5_request_rules(&provider, &model) {
+            body["max_tokens"] = serde_json::json!(1024);
+            body["thinking"] = serde_json::json!({ "type": "disabled" });
+        } else {
+            body["temperature"] = serde_json::json!(0.2);
+        }
 
         let mut request = client
             .post(chat_url(&base_url))

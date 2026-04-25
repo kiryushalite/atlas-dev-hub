@@ -34,6 +34,11 @@ type ProviderReply = {
   content: string;
 };
 
+type OrchestrationContext = {
+  summary: string;
+  sources: string[];
+};
+
 type AgentId = "codex" | "claude" | "kimi" | "perplexity";
 type AgentRunStatus = "queued" | "running" | "success" | "error" | "skipped";
 
@@ -45,12 +50,17 @@ type AgentRun = {
   route: string;
   profile: string;
   fallbackUsed: boolean;
+  contextLabel: string;
+  contextWarning: string;
   result: string;
   error: string;
   updatedAt: number;
 };
 
-type AgentMeta = Omit<AgentRun, "agent" | "status" | "result" | "error" | "updatedAt">;
+type AgentMeta = Omit<
+  AgentRun,
+  "agent" | "status" | "result" | "error" | "updatedAt" | "contextLabel" | "contextWarning"
+>;
 
 const agentOrder: AgentId[] = ["codex", "claude", "kimi", "perplexity"];
 
@@ -213,6 +223,8 @@ function initialAgentRuns(): Record<AgentId, AgentRun> {
         route: agentModelDefaults[agent].route,
         profile: agentModelDefaults[agent].profile,
         fallbackUsed: false,
+        contextLabel: "no local context",
+        contextWarning: "Результат ещё не запускался.",
         result: "Не выбран.",
         error: "",
         updatedAt: Date.now()
@@ -271,6 +283,115 @@ function recommendationForTask(task: string) {
   return `Рекомендация: ${unique.map((agent) => agentCopy[agent].title).join(" + ")}.`;
 }
 
+function trimForPrompt(value: string, limit: number) {
+  if (value.length <= limit) {
+    return value;
+  }
+  return `...[tail]\n${value.slice(Math.max(0, value.length - limit))}`;
+}
+
+function safeTail(value: string, limit: number) {
+  if (value.length <= limit) {
+    return value;
+  }
+  return `...[tail]\n${value.slice(Math.max(0, value.length - limit))}`;
+}
+
+function contextLabel(sources: string[]) {
+  if (sources.length === 0) {
+    return "task only";
+  }
+  const hasNotes = sources.some((source) => source.includes("/notes/"));
+  const hasEvents = sources.some((source) => source.includes("events.log"));
+  if (hasNotes && hasEvents) {
+    return "task + notes/events";
+  }
+  if (sources.length > 0) {
+    return "task + local summary";
+  }
+  return "task only";
+}
+
+function contextWarning(sources: string[]) {
+  if (sources.length === 0) {
+    return "Ответ может быть неполным: агент не получил локальный план/документы проекта.";
+  }
+  return "";
+}
+
+function selectedAgentNames(selection: Record<AgentId, boolean>) {
+  return agentOrder
+    .filter((agent) => selection[agent])
+    .map((agent) => agentCopy[agent].title)
+    .join(", ");
+}
+
+function sameSelection(a: Record<AgentId, boolean> | null, b: Record<AgentId, boolean>) {
+  return Boolean(a && agentOrder.every((agent) => a[agent] === b[agent]));
+}
+
+function buildContextEnvelope(
+  provider: "kimi" | "perplexity",
+  task: string,
+  selection: Record<AgentId, boolean>,
+  localContext: OrchestrationContext,
+  statusOutput: string,
+  eventsOutput: string
+) {
+  const sources = localContext.sources.length > 0 ? localContext.sources : ["status/events snapshot"];
+  const localSummary =
+    localContext.summary.trim() ||
+    [
+      "## agent_status snapshot",
+      safeTail(statusOutput || "No status snapshot.", 2500),
+      "## events snapshot",
+      safeTail(eventsOutput || "No events snapshot.", 2500)
+    ].join("\n");
+  const groundingRules =
+    provider === "kimi"
+      ? [
+          "Ты Kimi в Atlas Dev Hub. Работай как summarization/planning agent только на переданном контексте.",
+          "Используй только предоставленный контекст. Если данных недостаточно, скажи, какой файл/план/лог нужен.",
+          "Не выдумывай issue numbers, PR numbers, agent names, roadmap items, merge numbers или внешние факты."
+        ]
+      : [
+          "Ты Perplexity/OpenRouter в Atlas Dev Hub. ADG / Atlas Dev Hub здесь — локальный пользовательский проект, не публичный термин.",
+          "Если вопрос про внутренний план ADG, используй только локальный контекст ниже и скажи, если его недостаточно.",
+          "Для внешнего web research ищи только конкретные технологии/документацию, а не случайные публичные проекты с названием Atlas."
+        ];
+
+  return {
+    label: contextLabel(localContext.sources),
+    warning: contextWarning(localContext.sources),
+    sources,
+    prompt: [
+      "# Context Envelope",
+      "Project: Atlas Dev Hub / ADG.",
+      `User task: ${task}`,
+      `Selected agents: ${selectedAgentNames(selection) || "none"}`,
+      "",
+      "## Current known status",
+      "- P0 закрыт.",
+      "- Provider-block P1 закрыт: Kimi и Perplexity работают через OpenRouter fallback.",
+      "- Kimi route: moonshotai/kimi-k2.6 / OpenRouter fallback.",
+      "- Perplexity route: perplexity/sonar / OpenRouter fallback.",
+      "- Текущая цель: ADG как orchestration cockpit.",
+      "",
+      "## Grounding rules",
+      ...groundingRules.map((rule) => `- ${rule}`),
+      "",
+      "## Local context sources",
+      ...sources.map((source) => `- ${source}`),
+      "",
+      "## Recent local context",
+      trimForPrompt(localSummary, 9000),
+      "",
+      "## Required answer",
+      "Ответь по-русски. Отдели факты из контекста от предположений. Если контекста мало, начни с того, чего не хватает."
+    ].join("\n")
+  };
+}
+
 export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [providerStatuses, setProviderStatuses] = useState<ProviderStatus[]>([]);
@@ -297,6 +418,9 @@ export default function App() {
   const [runId, setRunId] = useState("");
   const [runOutput, setRunOutput] = useState("");
   const [agentRuns, setAgentRuns] = useState<Record<AgentId, AgentRun>>(initialAgentRuns);
+  const [lastRunStartedAt, setLastRunStartedAt] = useState("");
+  const [lastRunSelection, setLastRunSelection] = useState<Record<AgentId, boolean> | null>(null);
+  const [lastRunContextSources, setLastRunContextSources] = useState<string[]>([]);
   const [providerPrompt, setProviderPrompt] = useState(
     "Проверь текущий план Atlas Dev Hub. Назови риски и один конкретный следующий шаг."
   );
@@ -325,6 +449,10 @@ export default function App() {
     [selectedAgents]
   );
   const routeRecommendation = useMemo(() => recommendationForTask(taskText), [taskText]);
+  const selectionChangedSinceLastRun = useMemo(
+    () => Boolean(lastRunStartedAt && !sameSelection(lastRunSelection, selectedAgents)),
+    [lastRunSelection, lastRunStartedAt, selectedAgents]
+  );
 
   useEffect(() => {
     window.localStorage.setItem("adg.selectedAgents", JSON.stringify(selectedAgents));
@@ -370,10 +498,14 @@ export default function App() {
     setEventsOutput(events || "Событий пока нет.");
   }
 
-  async function boot() {
+  async function boot(markManualRefresh = false) {
     try {
       await Promise.all([refreshWorkspace(), refreshProviders(), refreshStatus()]);
-      setNotice("Рабочая среда подключена.");
+      setNotice(
+        markManualRefresh && lastRunStartedAt
+          ? "Обновлено. Карточки ниже относятся к последнему запуску, не к текущему выбору."
+          : "Рабочая среда подключена."
+      );
     } catch (error) {
       setNotice(errorText(error));
     }
@@ -439,6 +571,8 @@ export default function App() {
       agent,
       status,
       ...agentMeta(agent),
+      contextLabel: "no local context",
+      contextWarning: "",
       result: status === "error" ? "" : message,
       error: status === "error" ? message : "",
       updatedAt: Date.now()
@@ -458,6 +592,14 @@ export default function App() {
 
   function runIdFromOutput(output: string) {
     return output.match(/RUN_ID=([^\s]+)/)?.[1] ?? "";
+  }
+
+  async function loadOrchestrationContext(): Promise<OrchestrationContext> {
+    try {
+      return await invoke<OrchestrationContext>("orchestration_context");
+    } catch {
+      return { summary: "", sources: [] };
+    }
   }
 
   async function startClaude() {
@@ -524,6 +666,7 @@ export default function App() {
     }
     if (selectedCount === 0) {
       setNotice("Выбери хотя бы одного агента.");
+      setAgentRuns(initialAgentRuns());
       return;
     }
     if (guardedHeavyWork()) {
@@ -535,6 +678,11 @@ export default function App() {
 
     setBusy(true);
     const selected = agentOrder.filter((agent) => selectedAgents[agent]);
+    const startedAt = new Date().toLocaleString("ru-RU");
+    setLastRunStartedAt(startedAt);
+    setLastRunSelection({ ...selectedAgents });
+    const localContext = await loadOrchestrationContext();
+    setLastRunContextSources(localContext.sources);
     const cycleRuns: Record<AgentId, AgentRun> = Object.fromEntries(
       agentOrder.map((agent) => [
         agent,
@@ -579,13 +727,27 @@ export default function App() {
             continue;
           }
           if (agent === "kimi" || agent === "perplexity") {
-            const reply = await ask(agent, taskText);
+            const envelope = buildContextEnvelope(
+              agent,
+              taskText,
+              selectedAgents,
+              localContext,
+              statusOutput,
+              eventsOutput
+            );
+            updateAgentRun(agent, {
+              contextLabel: envelope.label,
+              contextWarning: envelope.warning
+            });
+            const reply = await ask(agent, envelope.prompt);
             const successRun: AgentRun = {
               ...makeRun(agent, "success", reply.content),
               provider: reply.provider,
               model: reply.model,
               route: reply.route,
-              fallbackUsed: reply.fallback_used
+              fallbackUsed: reply.fallback_used,
+              contextLabel: envelope.label,
+              contextWarning: envelope.warning
             };
             results.push(successRun);
             updateAgentRun(agent, successRun);
@@ -601,10 +763,11 @@ export default function App() {
       const skipped = agentOrder.filter((agent) => !selectedAgents[agent]);
       setRunOutput((current) =>
         [
-          `Цикл выбранных агентов:
+          `Цикл выбранных агентов (${startedAt}):
 success: ${succeeded.map((item) => agentCopy[item.agent].title).join(", ") || "нет"}
 error: ${failed.map((item) => agentCopy[item.agent].title).join(", ") || "нет"}
 skipped: ${skipped.map((agent) => agentCopy[agent].title).join(", ") || "нет"}
+context: ${localContext.sources.join(", ") || "status/events snapshot only"}
 Дальше: смотри отдельные карточки результатов и route/model по каждому агенту.`,
           current
         ]
@@ -681,7 +844,7 @@ skipped: ${skipped.map((agent) => agentCopy[agent].title).join(", ") || "нет"
           <h1>Atlas Dev Hub</h1>
         </div>
         <div className="topbar-actions">
-          <button className="ghost-button" onClick={boot} disabled={busy}>
+          <button className="ghost-button" onClick={() => void boot(true)} disabled={busy}>
             <RefreshCw size={18} />
             Обновить
           </button>
@@ -875,9 +1038,19 @@ skipped: ${skipped.map((agent) => agentCopy[agent].title).join(", ") || "нет"
               <Terminal size={18} />
               <h3>Запуск выбранных</h3>
             </div>
+            <p className="run-note">
+              {lastRunStartedAt
+                ? `Результаты последнего запуска: ${lastRunStartedAt}.`
+                : "Результатов запуска пока нет."}
+              {selectionChangedSinceLastRun ? " Текущий выбор агентов изменён после запуска." : ""}
+            </p>
+            <p className="context-note">
+              Контекст: {lastRunContextSources.join(", ") || "пока не передавался"}.
+            </p>
             <div className="run-grid">
               {agentOrder.map((agent) => {
                 const run = agentRuns[agent] ?? makeRun(agent, "skipped", "Не выбран.");
+                const isCurrentlyOff = !selectedAgents[agent] && run.status !== "skipped";
                 return (
                   <article className={`run-card ${run.status}`} key={agent}>
                     <div className="run-card-head">
@@ -890,6 +1063,11 @@ skipped: ${skipped.map((agent) => agentCopy[agent].title).join(", ") || "нет"
                       <span>{run.route}</span>
                       <span>fallback: {run.fallbackUsed ? "yes" : "no"}</span>
                     </div>
+                    <div className="context-chip">
+                      {run.contextLabel}
+                      {isCurrentlyOff ? " / сейчас выключен" : ""}
+                    </div>
+                    {run.contextWarning && <div className="inline-warning small">{run.contextWarning}</div>}
                     <p>{run.error || run.result}</p>
                   </article>
                 );

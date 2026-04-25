@@ -603,6 +603,14 @@ textarea:focus {
   gap: 10px;
 }
 
+.run-note,
+.context-note {
+  margin: 0 0 8px;
+  color: #5d6878;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .run-card {
   min-height: 150px;
   border: 1px solid #d7dde7;
@@ -658,6 +666,24 @@ textarea:focus {
 .run-status.skipped {
   color: #667085;
   background: #eef2f6;
+}
+
+.context-chip {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #344054;
+  background: #eef2f6;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.inline-warning.small {
+  margin-top: 8px;
+  align-items: flex-start;
+  color: #92520f;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .run-card p {

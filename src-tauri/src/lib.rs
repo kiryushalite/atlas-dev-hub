@@ -67,6 +67,12 @@ struct ProviderReply {
     content: String,
 }
 
+#[derive(Serialize)]
+struct OrchestrationContext {
+    summary: String,
+    sources: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize, Default, Clone)]
 struct ProviderEntry {
     api_key: Option<String>,
@@ -174,6 +180,19 @@ fn worktree_root() -> Result<PathBuf, String> {
 
 fn hub_worktree_root() -> Result<PathBuf, String> {
     Ok(workspace_root()?.join("atlas-dev-hub-worktrees"))
+}
+
+fn read_text_limited(path: &Path, limit: usize) -> Option<String> {
+    let raw = fs::read_to_string(path).ok()?;
+    if raw.len() <= limit {
+        Some(raw)
+    } else {
+        let mut start = raw.len().saturating_sub(limit);
+        while start < raw.len() && !raw.is_char_boundary(start) {
+            start += 1;
+        }
+        Some(format!("...[tail]\n{}", &raw[start..]))
+    }
 }
 
 fn provider_config_path() -> PathBuf {
@@ -1148,6 +1167,66 @@ fn read_agent_events() -> Result<String, String> {
 }
 
 #[tauri::command]
+fn orchestration_context() -> Result<OrchestrationContext, String> {
+    let bus = bus_root()?;
+    let mut sources = Vec::new();
+    let mut sections = Vec::new();
+
+    let shared = bus.join("shared-context.md");
+    if let Some(text) = read_text_limited(&shared, 3000) {
+        sources.push("agent-bus/shared-context.md".to_string());
+        sections.push(format!("## shared-context.md\n{}", text.trim()));
+    }
+
+    let events = bus.join("events.log");
+    if let Some(text) = read_text_limited(&events, 5000) {
+        sources.push("agent-bus/events.log tail".to_string());
+        sections.push(format!("## events.log tail\n{}", text.trim()));
+    }
+
+    let notes_dir = bus.join("notes");
+    if let Ok(entries) = fs::read_dir(notes_dir) {
+        let mut files = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                let name = path.file_name()?.to_string_lossy().to_lowercase();
+                if name.contains("kimi-error")
+                    || name.contains("retry-error")
+                    || name.contains("perplexity-error")
+                    || name.contains("perplexity-openrouter-probe")
+                    || name.contains("atlas-kickoff-perplexity")
+                {
+                    return None;
+                }
+                let metadata = entry.metadata().ok()?;
+                if !metadata.is_file() {
+                    return None;
+                }
+                let modified = metadata.modified().ok()?;
+                Some((modified, path))
+            })
+            .collect::<Vec<_>>();
+        files.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, path) in files.into_iter().take(3) {
+            if let Some(text) = read_text_limited(&path, 2500) {
+                let name = path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("note");
+                sources.push(format!("agent-bus/notes/{name}"));
+                sections.push(format!("## notes/{name}\n{}", text.trim()));
+            }
+        }
+    }
+
+    Ok(OrchestrationContext {
+        summary: sections.join("\n\n"),
+        sources,
+    })
+}
+
+#[tauri::command]
 fn watch_agent_run(run_id: String, tail: Option<u32>) -> Result<String, String> {
     let tail = tail.unwrap_or(120).to_string();
     run_script(
@@ -1428,6 +1507,7 @@ pub fn run() {
             codex_session_stop,
             agent_status,
             read_agent_events,
+            orchestration_context,
             watch_agent_run,
             start_claude_task,
             start_codex_task,

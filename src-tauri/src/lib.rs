@@ -473,6 +473,61 @@ fn read_log_tail(path: &Path, max_lines: usize) -> Result<Vec<String>, String> {
     Ok(lines)
 }
 
+fn modified_millis(path: &Path) -> u128 {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+fn infer_repo_from_cwd(cwd: &str) -> Option<String> {
+    let normalized = cwd.replace('\\', "/").to_lowercase();
+    if normalized.contains("atlas-dev-hub") && !normalized.contains("atlas-v0") {
+        Some("hub".to_string())
+    } else if normalized.contains("atlas-v0") {
+        Some("atlas".to_string())
+    } else {
+        None
+    }
+}
+
+fn legacy_session_from_log(path: &Path) -> Option<PersistedSession> {
+    let name = path.file_name()?.to_str()?;
+    let session_id = name.strip_prefix("codex-chat-")?.strip_suffix(".log")?;
+    let raw = fs::read_to_string(path).ok()?;
+    if raw.contains("[meta] session stopped") {
+        return None;
+    }
+    let cwd = raw
+        .lines()
+        .find_map(|line| line.strip_prefix("[meta] session created cwd="))?
+        .to_string();
+    let repo = infer_repo_from_cwd(&cwd)?;
+    let thread_id = raw.lines().find_map(|line| {
+        let json = line.strip_prefix("[out] ")?;
+        let value = serde_json::from_str::<Value>(json).ok()?;
+        if value.get("type").and_then(Value::as_str) != Some("thread.started") {
+            return None;
+        }
+        value
+            .get("thread_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })?;
+
+    Some(PersistedSession {
+        session_id: session_id.to_string(),
+        repo,
+        cwd,
+        log_path: path.to_string_lossy().to_string(),
+        thread_id: Some(thread_id),
+        stopped: false,
+        updated_at_ms: modified_millis(path),
+    })
+}
+
 fn configure_git_safe_directory_env(command: &mut TokioCommand, cwd: &Path) {
     let existing_count = env::var("GIT_CONFIG_COUNT")
         .ok()
@@ -838,7 +893,7 @@ async fn codex_session_restore(repo: String) -> Result<Option<RestoredCodexSessi
     }
 
     let mut best: Option<PersistedSession> = None;
-    for entry in fs::read_dir(run_root).map_err(|err| err.to_string())? {
+    for entry in fs::read_dir(&run_root).map_err(|err| err.to_string())? {
         let path = entry.map_err(|err| err.to_string())?.path();
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
@@ -857,6 +912,28 @@ async fn codex_session_restore(repo: String) -> Result<Option<RestoredCodexSessi
         };
         if snapshot.repo != repo
             || snapshot.stopped
+            || snapshot.thread_id.is_none()
+            || !PathBuf::from(&snapshot.cwd).exists()
+            || !PathBuf::from(&snapshot.log_path).exists()
+        {
+            continue;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|current| snapshot.updated_at_ms > current.updated_at_ms)
+        {
+            best = Some(snapshot);
+        }
+    }
+    for entry in fs::read_dir(&run_root).map_err(|err| err.to_string())? {
+        let path = entry.map_err(|err| err.to_string())?.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("log") {
+            continue;
+        }
+        let Some(snapshot) = legacy_session_from_log(&path) else {
+            continue;
+        };
+        if snapshot.repo != repo
             || snapshot.thread_id.is_none()
             || !PathBuf::from(&snapshot.cwd).exists()
             || !PathBuf::from(&snapshot.log_path).exists()

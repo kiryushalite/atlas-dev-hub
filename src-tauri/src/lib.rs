@@ -18,6 +18,8 @@ use tokio::{
 use uuid::Uuid;
 
 const CODEX_UI_CHUNK_LIMIT: usize = 200 * 1024;
+const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const KIMI_OPENROUTER_MODEL: &str = "moonshotai/kimi-k2.6";
 
 #[allow(dead_code)]
 struct SessionHandle {
@@ -105,7 +107,14 @@ struct ChatChoice {
 #[derive(Serialize, Deserialize)]
 struct ChatMessage {
     role: String,
-    content: String,
+    content: Option<String>,
+}
+
+struct ProviderAttempt {
+    base_url: String,
+    model: String,
+    route: String,
+    api_key: String,
 }
 
 #[derive(Deserialize)]
@@ -398,20 +407,42 @@ fn provider_api_key(provider: &str, config: &ProvidersConfig) -> Result<Option<S
     Ok(env_key.filter(|value| !value.trim().is_empty()))
 }
 
+fn openrouter_api_key(config: &ProvidersConfig) -> Option<String> {
+    env::var("OPENROUTER_API_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            config
+                .perplexity
+                .api_key
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+        })
+}
+
 fn is_openrouter_url(base_url: &str) -> bool {
     base_url.to_lowercase().contains("openrouter.ai")
 }
 
 fn openrouter_model(provider: &str, model: &str) -> String {
-    if provider == "perplexity" && !model.contains('/') {
-        format!("perplexity/{model}")
-    } else {
-        model.to_string()
+    match provider {
+        "perplexity" if !model.contains('/') => format!("perplexity/{model}"),
+        "kimi" if !model.contains('/') => KIMI_OPENROUTER_MODEL.to_string(),
+        _ => model.to_string(),
     }
 }
 
 fn uses_kimi_k2_5_request_rules(provider: &str, model: &str) -> bool {
     provider == "kimi" && model.trim().to_lowercase().starts_with("kimi-k2.5")
+}
+
+fn should_try_kimi_openrouter_fallback(status: reqwest::StatusCode, body: &str) -> bool {
+    let body_lower = body.to_lowercase();
+    status.as_u16() == 429
+        && (body_lower.contains("insufficient balance")
+            || body_lower.contains("quota")
+            || body_lower.contains("exceeded_current_quota_error"))
 }
 
 fn chat_url(base_url: &str) -> String {
@@ -1185,25 +1216,45 @@ async fn ask_provider(provider: String, prompt: String) -> Result<ProviderReply,
     };
 
     let client = reqwest::Client::new();
-    let mut attempts = vec![(
-        status.base_url.clone(),
-        if is_openrouter_url(&status.base_url) {
+    let direct_route = if provider == "kimi" && !is_openrouter_url(&status.base_url) {
+        "Moonshot direct".to_string()
+    } else {
+        status.base_url.clone()
+    };
+    let mut attempts = vec![ProviderAttempt {
+        base_url: status.base_url.clone(),
+        model: if is_openrouter_url(&status.base_url) {
             openrouter_model(&provider, &status.model)
         } else {
             status.model.clone()
         },
-    )];
+        route: direct_route,
+        api_key,
+    }];
     if provider == "perplexity" && !is_openrouter_url(&status.base_url) {
-        attempts.push((
-            "https://openrouter.ai/api/v1".to_string(),
-            openrouter_model(&provider, &status.model),
-        ));
+        attempts.push(ProviderAttempt {
+            base_url: OPENROUTER_BASE_URL.to_string(),
+            model: openrouter_model(&provider, &status.model),
+            route: "OpenRouter fallback".to_string(),
+            api_key: attempts[0].api_key.clone(),
+        });
+    }
+    if provider == "kimi" && !is_openrouter_url(&status.base_url) {
+        if let Some(openrouter_key) = openrouter_api_key(&config) {
+            attempts.push(ProviderAttempt {
+                base_url: OPENROUTER_BASE_URL.to_string(),
+                model: openrouter_model(&provider, &status.model),
+                route: "OpenRouter fallback".to_string(),
+                api_key: openrouter_key,
+            });
+        }
     }
 
     let mut failures = Vec::new();
-    for (index, (base_url, model)) in attempts.into_iter().enumerate() {
+    let attempts_len = attempts.len();
+    for (index, attempt) in attempts.into_iter().enumerate() {
         let mut body = serde_json::json!({
-            "model": model,
+            "model": attempt.model,
             "messages": [
                 {
                     "role": "system",
@@ -1215,18 +1266,22 @@ async fn ask_provider(provider: String, prompt: String) -> Result<ProviderReply,
                 }
             ]
         });
-        if uses_kimi_k2_5_request_rules(&provider, &model) {
+        if provider == "kimi" {
             body["max_tokens"] = serde_json::json!(1024);
-            body["thinking"] = serde_json::json!({ "type": "disabled" });
+            if !is_openrouter_url(&attempt.base_url)
+                && uses_kimi_k2_5_request_rules(&provider, &attempt.model)
+            {
+                body["thinking"] = serde_json::json!({ "type": "disabled" });
+            }
         } else {
             body["temperature"] = serde_json::json!(0.2);
         }
 
         let mut request = client
-            .post(chat_url(&base_url))
-            .bearer_auth(&api_key)
+            .post(chat_url(&attempt.base_url))
+            .bearer_auth(&attempt.api_key)
             .json(&body);
-        if is_openrouter_url(&base_url) {
+        if is_openrouter_url(&attempt.base_url) {
             request = request
                 .header("HTTP-Referer", "http://localhost")
                 .header("X-Title", "Atlas Dev Hub");
@@ -1235,11 +1290,23 @@ async fn ask_provider(provider: String, prompt: String) -> Result<ProviderReply,
         let http_status = response.status();
         let text = response.text().await.map_err(|err| err.to_string())?;
         if !http_status.is_success() {
-            failures.push(provider_user_error(&provider, http_status, &text));
+            failures.push(format!(
+                "{}: {}",
+                attempt.route,
+                provider_user_error(&provider, http_status, &text)
+            ));
             if provider == "perplexity"
                 && index == 0
-                && !is_openrouter_url(&base_url)
+                && !is_openrouter_url(&attempt.base_url)
                 && matches!(http_status.as_u16(), 401 | 403)
+            {
+                continue;
+            }
+            if provider == "kimi"
+                && index == 0
+                && attempts_len > 1
+                && !is_openrouter_url(&attempt.base_url)
+                && should_try_kimi_openrouter_fallback(http_status, &text)
             {
                 continue;
             }
@@ -1256,13 +1323,13 @@ async fn ask_provider(provider: String, prompt: String) -> Result<ProviderReply,
             .choices
             .into_iter()
             .next()
-            .map(|choice| choice.message.content)
+            .and_then(|choice| choice.message.content)
             .unwrap_or_else(|| "No answer returned.".to_string());
 
         return Ok(ProviderReply {
             provider,
-            model,
-            route: base_url,
+            model: attempt.model,
+            route: attempt.route,
             content,
         });
     }

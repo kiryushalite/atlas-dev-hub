@@ -102,12 +102,15 @@ struct RestoredCodexSession {
 #[derive(Deserialize)]
 struct ChatChoice {
     message: ChatMessage,
+    finish_reason: Option<String>,
+    text: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct ChatMessage {
     role: String,
-    content: Option<String>,
+    content: Option<Value>,
+    reasoning: Option<String>,
 }
 
 struct ProviderAttempt {
@@ -120,6 +123,7 @@ struct ProviderAttempt {
 #[derive(Deserialize)]
 struct ChatCompletionResponse {
     choices: Vec<ChatChoice>,
+    output_text: Option<Value>,
 }
 
 fn hub_root() -> Result<PathBuf, String> {
@@ -464,6 +468,43 @@ fn truncate_error(text: &str) -> String {
             end -= 1;
         }
         format!("{}...", &text[..end])
+    }
+}
+
+fn non_empty_text(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn content_value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => non_empty_text(text),
+        Value::Array(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(|part| {
+                    part.as_str()
+                        .and_then(non_empty_text)
+                        .or_else(|| {
+                            part.get("text")
+                                .and_then(Value::as_str)
+                                .and_then(non_empty_text)
+                        })
+                        .or_else(|| {
+                            part.get("content")
+                                .and_then(Value::as_str)
+                                .and_then(non_empty_text)
+                        })
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            non_empty_text(&text)
+        }
+        _ => None,
     }
 }
 
@@ -1268,9 +1309,9 @@ async fn ask_provider(provider: String, prompt: String) -> Result<ProviderReply,
         });
         if provider == "kimi" {
             body["max_tokens"] = serde_json::json!(1024);
-            if !is_openrouter_url(&attempt.base_url)
-                && uses_kimi_k2_5_request_rules(&provider, &attempt.model)
-            {
+            if is_openrouter_url(&attempt.base_url) {
+                body["reasoning"] = serde_json::json!({ "effort": "none" });
+            } else if uses_kimi_k2_5_request_rules(&provider, &attempt.model) {
                 body["thinking"] = serde_json::json!({ "type": "disabled" });
             }
         } else {
@@ -1319,12 +1360,39 @@ async fn ask_provider(provider: String, prompt: String) -> Result<ProviderReply,
                 truncate_error(&text)
             )
         })?;
-        let content = parsed
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|choice| choice.message.content)
-            .unwrap_or_else(|| "No answer returned.".to_string());
+        let response_output_text = parsed.output_text.as_ref().and_then(content_value_text);
+        let first_choice = parsed.choices.into_iter().next();
+        let finish_reason = first_choice
+            .as_ref()
+            .and_then(|choice| choice.finish_reason.as_deref())
+            .unwrap_or("unknown")
+            .to_string();
+        let reasoning_len = first_choice
+            .as_ref()
+            .and_then(|choice| choice.message.reasoning.as_deref())
+            .map(str::len)
+            .unwrap_or(0);
+        let content = first_choice
+            .as_ref()
+            .and_then(|choice| choice.message.content.as_ref())
+            .and_then(content_value_text)
+            .or_else(|| {
+                first_choice
+                    .as_ref()
+                    .and_then(|choice| choice.text.as_deref())
+                    .and_then(non_empty_text)
+            })
+            .or(response_output_text)
+            .ok_or_else(|| {
+                format!(
+                    "{}: provider returned HTTP {} but no answer text (model: {}, finish_reason: {}, reasoning_len: {}).",
+                    attempt.route,
+                    http_status.as_u16(),
+                    attempt.model,
+                    finish_reason,
+                    reasoning_len
+                )
+            })?;
 
         return Ok(ProviderReply {
             provider,

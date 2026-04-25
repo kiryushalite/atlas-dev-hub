@@ -6,6 +6,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Command,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
 use tokio::{
@@ -73,6 +74,26 @@ struct ProviderEntry {
 struct ProvidersConfig {
     kimi: ProviderEntry,
     perplexity: ProviderEntry,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct PersistedSession {
+    session_id: String,
+    repo: String,
+    cwd: String,
+    log_path: String,
+    thread_id: Option<String>,
+    stopped: bool,
+    updated_at_ms: u128,
+}
+
+#[derive(Serialize)]
+struct RestoredCodexSession {
+    session_id: String,
+    repo: String,
+    cwd: String,
+    thread_id: Option<String>,
+    log_tail: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -408,6 +429,61 @@ fn short_session_id(session_id: &str) -> String {
     session_id.chars().take(8).collect()
 }
 
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+fn session_meta_path(session_id: &str) -> Result<PathBuf, String> {
+    let run_root = hub_root()?.join(".agent-runs");
+    fs::create_dir_all(&run_root).map_err(|err| err.to_string())?;
+    Ok(run_root.join(format!("codex-chat-{session_id}.json")))
+}
+
+fn persist_session_state(
+    session_id: &str,
+    session: &SessionHandle,
+    stopped: bool,
+) -> Result<(), String> {
+    let snapshot = PersistedSession {
+        session_id: session_id.to_string(),
+        repo: session.repo.clone(),
+        cwd: session.cwd.to_string_lossy().to_string(),
+        log_path: session.log_path.to_string_lossy().to_string(),
+        thread_id: session.thread_id.clone(),
+        stopped,
+        updated_at_ms: now_millis(),
+    };
+    let path = session_meta_path(session_id)?;
+    let raw = serde_json::to_string_pretty(&snapshot).map_err(|err| err.to_string())?;
+    fs::write(path, raw).map_err(|err| err.to_string())
+}
+
+fn read_log_tail(path: &Path, max_lines: usize) -> Result<Vec<String>, String> {
+    let raw = fs::read_to_string(path).map_err(|err| err.to_string())?;
+    let mut lines = raw
+        .lines()
+        .rev()
+        .take(max_lines)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    lines.reverse();
+    Ok(lines)
+}
+
+fn configure_git_safe_directory_env(command: &mut TokioCommand, cwd: &Path) {
+    let existing_count = env::var("GIT_CONFIG_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let safe_directory = cwd.to_string_lossy().replace('\\', "/");
+    command.env("GIT_CONFIG_COUNT", (existing_count + 1).to_string());
+    command.env(format!("GIT_CONFIG_KEY_{existing_count}"), "safe.directory");
+    command.env(format!("GIT_CONFIG_VALUE_{existing_count}"), safe_directory);
+}
+
 fn create_hub_chat_worktree(session_id: &str) -> Result<PathBuf, String> {
     let run_id = format!("codex-chat-{}", short_session_id(session_id));
     let branch = format!("agent/codex-hub-{}", short_session_id(session_id));
@@ -468,6 +544,7 @@ fn update_session_thread(session_id: &str, line: &str) {
         let mut sessions = SESSIONS.lock().await;
         if let Some(session) = sessions.get_mut(&session_id) {
             session.thread_id = Some(thread_id);
+            let _ = persist_session_state(&session_id, session, false);
         }
     });
 }
@@ -567,6 +644,7 @@ async fn spawn_codex_turn(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    configure_git_safe_directory_env(&mut command, &cwd);
 
     let mut child = command.spawn().map_err(|err| err.to_string())?;
     let pid = child.id();
@@ -631,14 +709,17 @@ async fn spawn_codex_turn(
             Err(err) => format!("turn wait failed: {err}"),
         };
         append_session_log(&log_path, "meta", &exit_line).await;
-        let _ = app.emit(
-            &format!("codex://{session_id}/out"),
-            format!(r#"{{"type":"process.exited","message":"{exit_line}"}}"#),
-        );
+        let payload = serde_json::json!({
+            "type": "process.exited",
+            "message": exit_line
+        })
+        .to_string();
+        let _ = app.emit(&format!("codex://{session_id}/out"), payload);
         let mut sessions = SESSIONS.lock().await;
         if let Some(session) = sessions.get_mut(&session_id) {
             session.active = false;
             session.active_pid = None;
+            let _ = persist_session_state(&session_id, session, false);
         }
     });
 
@@ -715,6 +796,9 @@ async fn codex_session_start(
                 active: false,
             },
         );
+        if let Some(session) = sessions.get(&session_id) {
+            persist_session_state(&session_id, session, false)?;
+        }
     }
 
     append_session_log(
@@ -743,6 +827,80 @@ async fn codex_session_start(
 }
 
 #[tauri::command]
+async fn codex_session_restore(repo: String) -> Result<Option<RestoredCodexSession>, String> {
+    let repo = repo.to_lowercase();
+    if repo != "atlas" && repo != "hub" {
+        return Err("repo must be `atlas` or `hub`.".to_string());
+    }
+    let run_root = hub_root()?.join(".agent-runs");
+    if !run_root.exists() {
+        return Ok(None);
+    }
+
+    let mut best: Option<PersistedSession> = None;
+    for entry in fs::read_dir(run_root).map_err(|err| err.to_string())? {
+        let path = entry.map_err(|err| err.to_string())?.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("codex-chat-") {
+            continue;
+        }
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(snapshot) = serde_json::from_str::<PersistedSession>(&raw) else {
+            continue;
+        };
+        if snapshot.repo != repo
+            || snapshot.stopped
+            || snapshot.thread_id.is_none()
+            || !PathBuf::from(&snapshot.cwd).exists()
+            || !PathBuf::from(&snapshot.log_path).exists()
+        {
+            continue;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|current| snapshot.updated_at_ms > current.updated_at_ms)
+        {
+            best = Some(snapshot);
+        }
+    }
+
+    let Some(snapshot) = best else {
+        return Ok(None);
+    };
+    let log_tail = read_log_tail(Path::new(&snapshot.log_path), 240).unwrap_or_default();
+    {
+        let mut sessions = SESSIONS.lock().await;
+        sessions
+            .entry(snapshot.session_id.clone())
+            .or_insert_with(|| SessionHandle {
+                child: None,
+                stdin: None,
+                thread_id: snapshot.thread_id.clone(),
+                repo: snapshot.repo.clone(),
+                cwd: PathBuf::from(&snapshot.cwd),
+                log_path: PathBuf::from(&snapshot.log_path),
+                active_pid: None,
+                active: false,
+            });
+    }
+
+    Ok(Some(RestoredCodexSession {
+        session_id: snapshot.session_id,
+        repo: snapshot.repo,
+        cwd: snapshot.cwd,
+        thread_id: snapshot.thread_id,
+        log_tail,
+    }))
+}
+
+#[tauri::command]
 async fn codex_session_send(
     app: AppHandle,
     session_id: String,
@@ -766,6 +924,7 @@ async fn codex_session_stop(session_id: String) -> Result<(), String> {
                 .args(["/PID", &pid.to_string(), "/T", "/F"])
                 .output();
         }
+        let _ = persist_session_state(&session_id, &session, true);
         append_session_log(&session.log_path, "meta", "session stopped").await;
     }
     Ok(())
@@ -968,6 +1127,7 @@ pub fn run() {
             workspace_info,
             read_user_guide_intro,
             codex_session_start,
+            codex_session_restore,
             codex_session_send,
             codex_session_stop,
             agent_status,

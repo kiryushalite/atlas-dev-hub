@@ -23,6 +23,14 @@ type ChatMessage = {
   ts: number;
 };
 
+type RestoredCodexSession = {
+  session_id: string;
+  repo: "atlas" | "hub";
+  cwd: string;
+  thread_id: string | null;
+  log_tail: string[];
+};
+
 type CodexChatProps = {
   workspace: WorkspaceInfo | null;
   statusSnapshot: string;
@@ -114,6 +122,37 @@ function parseCodexLine(line: string): ChatMessage {
   }
 }
 
+function parseStoredLogLine(line: string): ChatMessage | null {
+  if (line.startsWith("[out] ")) {
+    return parseCodexLine(line.slice(6));
+  }
+  if (line.startsWith("[err] ")) {
+    return { role: "stderr", text: normalizeStderr(line.slice(6)), ts: Date.now() };
+  }
+  if (line.startsWith("[meta] ")) {
+    return { role: "system", text: line.slice(7), ts: Date.now() };
+  }
+  return null;
+}
+
+function normalizeStderr(text: string) {
+  if (text.includes("detected dubious ownership") || text.includes("safe.directory")) {
+    return "Git safe.directory: Codex работает в sandbox-пользователе. Dev Hub передаёт одноразовый safe.directory в окружение процесса; если это сообщение повторится, перезапусти сессию.";
+  }
+  return text;
+}
+
+function appendChatMessage(current: ChatMessage[], message: ChatMessage) {
+  if (message.role !== "stderr") {
+    return [...current, message];
+  }
+  const normalized = { ...message, text: normalizeStderr(message.text) };
+  const duplicate = current
+    .slice(-8)
+    .some((item) => item.role === "stderr" && item.text === normalized.text);
+  return duplicate ? current : [...current, normalized];
+}
+
 export default function CodexChat({
   workspace,
   statusSnapshot,
@@ -126,6 +165,7 @@ export default function CodexChat({
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const restoredReposRef = useRef<Set<string>>(new Set());
 
   const canStart = Boolean(workspace?.codex_cli && workspace.codex_stream_ok);
   const targetPath = useMemo(() => {
@@ -146,32 +186,59 @@ export default function CodexChat({
 
     let unlistenOut: UnlistenFn | null = null;
     let unlistenErr: UnlistenFn | null = null;
-    let closed = false;
 
     async function attach() {
       unlistenOut = await listen<string>(`codex://${sessionId}/out`, (event) => {
-        setMessages((current) => [...current, parseCodexLine(event.payload)]);
+        setMessages((current) => appendChatMessage(current, parseCodexLine(event.payload)));
       });
       unlistenErr = await listen<string>(`codex://${sessionId}/err`, (event) => {
-        setMessages((current) => [
-          ...current,
-          { role: "stderr", text: event.payload, ts: Date.now() }
-        ]);
+        setMessages((current) =>
+          appendChatMessage(current, { role: "stderr", text: event.payload, ts: Date.now() })
+        );
       });
     }
 
     void attach().catch((error) => onNotice(String(error)));
 
     return () => {
-      closed = true;
       unlistenOut?.();
       unlistenErr?.();
-      if (!closed) {
-        return;
-      }
-      void invoke("codex_session_stop", { sessionId }).catch(() => undefined);
     };
   }, [onNotice, sessionId]);
+
+  useEffect(() => {
+    if (!workspace || !canStart || sessionId || messages.length > 0) {
+      return;
+    }
+    if (restoredReposRef.current.has(repoTarget)) {
+      return;
+    }
+    restoredReposRef.current.add(repoTarget);
+
+    void invoke<RestoredCodexSession | null>("codex_session_restore", { repo: repoTarget })
+      .then((restored) => {
+        if (!restored || sessionId) {
+          return;
+        }
+        const restoredMessages = restored.log_tail
+          .map(parseStoredLogLine)
+          .filter((message): message is ChatMessage => Boolean(message));
+        setSessionId(restored.session_id);
+        setMessages(
+          restoredMessages.length > 0
+            ? restoredMessages
+            : [
+                {
+                  role: "system",
+                  text: `сессия ${restored.session_id} восстановлена для ${restored.repo}: ${restored.cwd}`,
+                  ts: Date.now()
+                }
+              ]
+        );
+        onNotice(`Продолжена сессия Codex ${restored.session_id}.`);
+      })
+      .catch(() => undefined);
+  }, [canStart, messages.length, onNotice, repoTarget, sessionId, workspace]);
 
   async function buildSystemPrompt() {
     let guideIntro = "";

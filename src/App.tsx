@@ -16,17 +16,7 @@ import {
   Wand2
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-
-type WorkspaceInfo = {
-  hub_root: string;
-  atlas_root: string;
-  bus_root: string;
-  worktree_root: string;
-  provider_config_path: string;
-  user_guide_path: string;
-  codex_cli: string | null;
-  claude_cli: string | null;
-};
+import CodexChat, { type WorkspaceInfo } from "./CodexChat";
 
 type ProviderStatus = {
   provider: string;
@@ -361,6 +351,10 @@ export default function App() {
           <strong>{workspace?.codex_cli ? "ready" : "missing"}</strong>
         </div>
         <div>
+          <span>Codex stream</span>
+          <strong>{workspace?.codex_stream_ok ? "jsonl" : "missing"}</strong>
+        </div>
+        <div>
           <span>Claude CLI</span>
           <strong>{workspace?.claude_cli ? "ready" : "missing"}</strong>
         </div>
@@ -588,6 +582,13 @@ export default function App() {
           </div>
         </div>
       </section>
+
+      <CodexChat
+        workspace={workspace}
+        statusSnapshot={statusOutput}
+        eventsSnapshot={eventsOutput}
+        onNotice={setNotice}
+      />
 
       <section className="console-grid">
         <article>

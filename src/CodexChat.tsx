@@ -48,10 +48,25 @@ function formatTime(ts: number) {
   });
 }
 
+function roleLabel(role: ChatRole) {
+  switch (role) {
+    case "system":
+      return "система";
+    case "user":
+      return "ты";
+    case "codex":
+      return "codex";
+    case "stderr":
+      return "ошибка";
+    default:
+      return role;
+  }
+}
+
 function parseCodexLine(line: string): ChatMessage {
   const safeLine =
     line.length > MAX_UI_CHUNK
-      ? `${line.slice(0, MAX_UI_CHUNK)}...[truncated; full chunk written to session log]`
+      ? `${line.slice(0, MAX_UI_CHUNK)}...[обрезано; полный фрагмент записан в лог сессии]`
       : line;
 
   try {
@@ -75,21 +90,21 @@ function parseCodexLine(line: string): ChatMessage {
     if (type === "thread.started") {
       return {
         role: "system",
-        text: `thread started: ${value.thread_id}`,
+        text: `тред запущен: ${value.thread_id}`,
         ts: Date.now()
       };
     }
     if (type === "turn.started") {
-      return { role: "system", text: "turn started", ts: Date.now() };
+      return { role: "system", text: "ход начался", ts: Date.now() };
     }
     if (type === "turn.completed") {
       const usage = value.usage ? ` ${JSON.stringify(value.usage)}` : "";
-      return { role: "system", text: `turn completed${usage}`, ts: Date.now() };
+      return { role: "system", text: `ход завершён${usage}`, ts: Date.now() };
     }
     if (type === "process.exited") {
       return {
         role: "system",
-        text: String(value.message ?? "process exited"),
+        text: String(value.message ?? "процесс завершён"),
         ts: Date.now()
       };
     }
@@ -163,31 +178,31 @@ export default function CodexChat({
     try {
       guideIntro = await invoke<string>("read_user_guide_intro");
     } catch {
-      guideIntro = "Atlas Dev Hub is the local orchestration app for Atlas development.";
+      guideIntro = "Atlas Dev Hub — локальное приложение-оркестратор для разработки Atlas.";
     }
 
     return [
-      "You are Codex inside Atlas Dev Hub interactive chat.",
-      "The user expects practical engineering help and safe branch-based work.",
+      "Ты Codex внутри интерактивного чата Atlas Dev Hub.",
+      "Пользователь ждёт практической инженерной помощи и безопасной работы через ветки.",
       `Target repo: ${repoTarget}.`,
       repoTarget === "hub"
-        ? "You are in self-edit mode for atlas-dev-hub. Work only in the created hub worktree."
-        : "You are in Atlas mode. Use the Atlas repo as the working root.",
+        ? "Ты в self-edit режиме для atlas-dev-hub. Работай только в созданном hub worktree."
+        : "Ты в режиме Atlas. Используй репозиторий Atlas как рабочий root.",
       "",
-      "Atlas Dev Hub guide excerpt:",
+      "Фрагмент инструкции Atlas Dev Hub:",
       clip(guideIntro, 1600),
       "",
-      "Current Agent Status snapshot:",
+      "Текущий снимок статуса агентов:",
       clip(statusSnapshot, 1200),
       "",
-      "Current Events snapshot:",
+      "Текущий снимок событий:",
       clip(eventsSnapshot, 1200)
     ].join("\n");
   }
 
   async function startSession() {
     if (!canStart) {
-      onNotice("Codex JSON stream is unavailable. Check Codex CLI setup.");
+      onNotice("JSON-поток Codex недоступен. Проверь настройку Codex CLI.");
       return;
     }
     setBusy(true);
@@ -201,11 +216,11 @@ export default function CodexChat({
       setMessages([
         {
           role: "system",
-          text: `session ${id} started for ${repoTarget}: ${targetPath}`,
+          text: `сессия ${id} запущена для ${repoTarget}: ${targetPath}`,
           ts: Date.now()
         }
       ]);
-      onNotice("Codex chat session started.");
+      onNotice("Чат Codex запущен.");
     } catch (error) {
       onNotice(String(error));
     } finally {
@@ -222,10 +237,10 @@ export default function CodexChat({
       await invoke("codex_session_stop", { sessionId });
       setMessages((current) => [
         ...current,
-        { role: "system", text: "session stopped", ts: Date.now() }
+        { role: "system", text: "сессия остановлена", ts: Date.now() }
       ]);
       setSessionId(null);
-      onNotice("Codex chat stopped.");
+      onNotice("Чат Codex остановлен.");
     } catch (error) {
       onNotice(String(error));
     } finally {
@@ -243,7 +258,7 @@ export default function CodexChat({
       await invoke("codex_session_send", { sessionId, text });
       setMessages((current) => [...current, { role: "user", text, ts: Date.now() }]);
       setInput("");
-      onNotice("Message sent to Codex.");
+      onNotice("Сообщение отправлено Codex.");
     } catch (error) {
       onNotice(String(error));
     } finally {
@@ -256,10 +271,10 @@ export default function CodexChat({
       <div className="codex-chat-header">
         <div className="section-title">
           <Bot size={19} />
-          <h2>Codex Chat</h2>
+          <h2>Чат Codex</h2>
         </div>
         <div className="codex-chat-controls">
-          <div className="segmented" aria-label="Repo target">
+          <div className="segmented" aria-label="Целевой репозиторий">
             <button
               className={repoTarget === "atlas" ? "active" : ""}
               onClick={() => setRepoTarget("atlas")}
@@ -278,12 +293,12 @@ export default function CodexChat({
           {sessionId ? (
             <button className="ghost-button" onClick={stopSession} disabled={busy}>
               <PauseCircle size={18} />
-              Stop
+              Стоп
             </button>
           ) : (
             <button className="primary-button" onClick={startSession} disabled={busy || !canStart}>
               <Play size={18} />
-              Start
+              Старт
             </button>
           )}
         </div>
@@ -292,25 +307,25 @@ export default function CodexChat({
       {!workspace?.codex_stream_ok && (
         <div className="inline-warning">
           <ShieldAlert size={16} />
-          Codex CLI does not report `codex exec --json`; interactive chat is disabled.
+          Codex CLI не сообщает `codex exec --json`; интерактивный чат отключён.
         </div>
       )}
 
       <div className="codex-target">
         <GitBranch size={16} />
-        <span>{sessionId ? `active session ${sessionId}` : `target: ${targetPath || "loading"}`}</span>
+        <span>{sessionId ? `активная сессия ${sessionId}` : `цель: ${targetPath || "загрузка"}`}</span>
       </div>
 
       <div className="chat-log" ref={listRef}>
         {messages.length === 0 ? (
           <div className="chat-empty">
-            Start a session, then send a message. Dev Hub streams Codex JSONL events here.
+            Запусти сессию и отправь сообщение. Dev Hub будет показывать здесь JSONL-события Codex.
           </div>
         ) : (
           messages.map((message, index) => (
             <div className={`chat-message ${message.role}`} key={`${message.ts}-${index}`}>
               <div className="chat-meta">
-                <span>{message.role}</span>
+                <span>{roleLabel(message.role)}</span>
                 <time>{formatTime(message.ts)}</time>
               </div>
               <p>{message.text}</p>
@@ -324,7 +339,7 @@ export default function CodexChat({
           value={input}
           onChange={(event) => setInput(event.target.value)}
           rows={3}
-          placeholder="Ask Codex, or tell it what to change in the selected repo..."
+          placeholder="Спроси Codex или напиши, что изменить в выбранном репозитории..."
           disabled={!sessionId || busy}
           onKeyDown={(event) => {
             if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -335,7 +350,7 @@ export default function CodexChat({
         />
         <button className="primary-button" onClick={sendMessage} disabled={!sessionId || busy || !input.trim()}>
           <Send size={18} />
-          Send
+          Отправить
         </button>
       </div>
     </section>

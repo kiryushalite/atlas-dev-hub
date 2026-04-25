@@ -45,26 +45,26 @@ const agentCopy: Record<
 > = {
   codex: {
     title: "Codex",
-    role: "Lead developer",
-    tone: "Owns integration, branches, checks, final decisions.",
+    role: "Ведущий разработчик",
+    tone: "Ведёт интеграцию, ветки, проверки и финальные решения.",
     icon: Brain
   },
   claude: {
     title: "Claude",
-    role: "Reviewer and worker",
-    tone: "Strong for UI review, safety notes, scoped branch work.",
+    role: "Ревьюер и исполнитель",
+    tone: "Хорош для UI-ревью, замечаний по безопасности и узких веток.",
     icon: Bot
   },
   kimi: {
     title: "Kimi",
-    role: "Long-context assistant",
-    tone: "Useful for broad code reading, long notes, alternatives.",
+    role: "Помощник для длинного контекста",
+    tone: "Полезен для больших разборов кода, длинных заметок и альтернатив.",
     icon: Sparkles
   },
   perplexity: {
     title: "Perplexity",
-    role: "Research scout",
-    tone: "Useful for current docs, web research, source-backed notes.",
+    role: "Исследователь",
+    tone: "Полезен для свежей документации, web research и заметок с источниками.",
     icon: Search
   }
 };
@@ -82,6 +82,21 @@ function trimName(value: string) {
     .slice(0, 42);
 }
 
+function statusLabel(value?: string) {
+  switch (value) {
+    case "local-config":
+      return "локально";
+    case "environment":
+      return "env";
+    case "missing":
+      return "нет";
+    case "checking":
+      return "проверка";
+    default:
+      return value ?? "проверка";
+  }
+}
+
 export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [providerStatuses, setProviderStatuses] = useState<ProviderStatus[]>([]);
@@ -93,7 +108,7 @@ export default function App() {
   });
   const [taskName, setTaskName] = useState("atlas-next-step");
   const [taskText, setTaskText] = useState(
-    "Continue the Atlas restoration plan. Keep changes scoped, coordinate through the agent bus, and report risks before merging."
+    "Продолжи план разработки Atlas. Держи изменения узкими, координируйся через agent bus и докладывай риски перед merge."
   );
   const [mode, setMode] = useState<"work" | "review" | "plan">("work");
   const [fullPcAccess, setFullPcAccess] = useState(false);
@@ -107,7 +122,7 @@ export default function App() {
   const [runId, setRunId] = useState("");
   const [runOutput, setRunOutput] = useState("");
   const [providerPrompt, setProviderPrompt] = useState(
-    "Review the current Atlas Dev Hub plan. Point out risks and one concrete next step."
+    "Проверь текущий план Atlas Dev Hub. Назови риски и один конкретный следующий шаг."
   );
   const [providerReplies, setProviderReplies] = useState<Record<string, string>>({});
   const [providerForms, setProviderForms] = useState({
@@ -123,7 +138,7 @@ export default function App() {
     }
   });
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState("Ready.");
+  const [notice, setNotice] = useState("Готово.");
 
   const selectedCount = useMemo(
     () => Object.values(selectedAgents).filter(Boolean).length,
@@ -158,14 +173,14 @@ export default function App() {
       invoke<string>("agent_status"),
       invoke<string>("read_agent_events")
     ]);
-    setStatusOutput(status || "No status returned.");
-    setEventsOutput(events || "No events yet.");
+    setStatusOutput(status || "Статус не вернулся.");
+    setEventsOutput(events || "Событий пока нет.");
   }
 
   async function boot() {
     try {
       await Promise.all([refreshWorkspace(), refreshProviders(), refreshStatus()]);
-      setNotice("Workspace connected.");
+      setNotice("Рабочая среда подключена.");
     } catch (error) {
       setNotice(String(error));
     }
@@ -197,7 +212,7 @@ export default function App() {
       maxBudgetUsd: claudeBudget
     });
     setRunOutput(output);
-    setNotice("Claude task started.");
+    setNotice("Задача Claude запущена.");
     await refreshStatus();
   }
 
@@ -210,7 +225,7 @@ export default function App() {
       model: codexModel
     });
     setRunOutput(output);
-    setNotice("Codex task started.");
+    setNotice("Задача Codex запущена.");
     await refreshStatus();
   }
 
@@ -223,21 +238,21 @@ export default function App() {
       ...current,
       [provider]: `[${reply.provider} / ${reply.model}]\n${reply.content}`
     }));
-    setNotice(`${provider} answered.`);
+    setNotice(`${provider} ответил.`);
   }
 
   async function startSelected() {
     if (!taskText.trim()) {
-      setNotice("Write a task first.");
+      setNotice("Сначала напиши задачу.");
       return;
     }
     if (selectedCount === 0) {
-      setNotice("Select at least one agent.");
+      setNotice("Выбери хотя бы одного агента.");
       return;
     }
     if (guardedHeavyWork()) {
       setNotice(
-        `Usage guard active at ${sessionUsage}%. Switch to plan/review or lower current usage after saving context.`
+        `Ограничитель сработал на ${sessionUsage}%. Перейди в plan/review или снизь оценку usage после сохранения контекста.`
       );
       return;
     }
@@ -256,7 +271,7 @@ export default function App() {
       if (selectedAgents.perplexity) {
         await ask("perplexity");
       }
-      setNotice("Selected agents completed launch cycle.");
+      setNotice("Выбранные агенты прошли цикл запуска.");
     } catch (error) {
       setNotice(String(error));
     } finally {
@@ -279,7 +294,7 @@ export default function App() {
         ...current,
         [provider]: { ...current[provider], apiKey: "" }
       }));
-      setNotice(`${provider} connection saved locally.`);
+      setNotice(`Подключение ${provider} сохранено локально.`);
     } catch (error) {
       setNotice(String(error));
     } finally {
@@ -289,7 +304,7 @@ export default function App() {
 
   async function loadRunLog() {
     if (!runId.trim()) {
-      setNotice("Paste a run id first.");
+      setNotice("Сначала вставь RUN_ID.");
       return;
     }
     setBusy(true);
@@ -299,7 +314,7 @@ export default function App() {
         tail: 160
       });
       setRunOutput(output);
-      setNotice("Run log loaded.");
+      setNotice("Лог запуска загружен.");
     } catch (error) {
       setNotice(String(error));
     } finally {
@@ -318,13 +333,13 @@ export default function App() {
     <main className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">Local orchestration app</p>
+          <p className="eyebrow">Локальный центр разработки</p>
           <h1>Atlas Dev Hub</h1>
         </div>
         <div className="topbar-actions">
           <button className="ghost-button" onClick={boot} disabled={busy}>
             <RefreshCw size={18} />
-            Refresh
+            Обновить
           </button>
           <button
             className="ghost-button"
@@ -340,7 +355,7 @@ export default function App() {
             disabled={busy || guardedHeavyWork()}
           >
             <Play size={18} />
-            Start Selected
+            Запустить выбранных
           </button>
         </div>
       </header>
@@ -348,34 +363,34 @@ export default function App() {
       <section className="status-strip">
         <div>
           <span>Codex CLI</span>
-          <strong>{workspace?.codex_cli ? "ready" : "missing"}</strong>
+          <strong>{workspace?.codex_cli ? "готов" : "нет"}</strong>
         </div>
         <div>
-          <span>Codex stream</span>
-          <strong>{workspace?.codex_stream_ok ? "jsonl" : "missing"}</strong>
+          <span>Поток Codex</span>
+          <strong>{workspace?.codex_stream_ok ? "jsonl" : "нет"}</strong>
         </div>
         <div>
           <span>Claude CLI</span>
-          <strong>{workspace?.claude_cli ? "ready" : "missing"}</strong>
+          <strong>{workspace?.claude_cli ? "готов" : "нет"}</strong>
         </div>
         <div>
           <span>Kimi</span>
-          <strong>{providerByName(providerStatuses, "kimi")?.key_source ?? "checking"}</strong>
+          <strong>{statusLabel(providerByName(providerStatuses, "kimi")?.key_source)}</strong>
         </div>
         <div>
           <span>Perplexity</span>
           <strong>
-            {providerByName(providerStatuses, "perplexity")?.key_source ?? "checking"}
+            {statusLabel(providerByName(providerStatuses, "perplexity")?.key_source)}
           </strong>
         </div>
         <div className={guardedHeavyWork() ? "guard is-hot" : "guard"}>
           <Gauge size={18} />
           <strong>{sessionUsage}%</strong>
-          <span>guard {guardLevel}%</span>
+          <span>порог {guardLevel}%</span>
         </div>
       </section>
 
-      <section className="agent-grid" aria-label="Agent lanes">
+      <section className="agent-grid" aria-label="Панели агентов">
         {(Object.keys(agentCopy) as AgentId[]).map((agent) => {
           const Icon = agentCopy[agent].icon;
           const provider =
@@ -408,7 +423,7 @@ export default function App() {
               <p>{agentCopy[agent].tone}</p>
               <div className={ready ? "pill ok" : "pill warn"}>
                 {ready ? <CheckCircle2 size={14} /> : <ShieldAlert size={14} />}
-                {ready ? "connected" : "needs setup"}
+                {ready ? "подключён" : "нужна настройка"}
               </div>
             </article>
           );
@@ -419,24 +434,24 @@ export default function App() {
         <div className="task-pane">
           <div className="section-title">
             <Wand2 size={19} />
-            <h2>Task Inbox</h2>
+            <h2>Очередь задач</h2>
           </div>
           <div className="field-row">
             <label>
-              Task name
+              Имя задачи
               <input value={taskName} onChange={(event) => setTaskName(event.target.value)} />
             </label>
             <label>
-              Mode
+              Режим
               <select value={mode} onChange={(event) => setMode(event.target.value as typeof mode)}>
-                <option value="work">work</option>
-                <option value="review">review</option>
-                <option value="plan">plan</option>
+                <option value="work">работа</option>
+                <option value="review">ревью</option>
+                <option value="plan">план</option>
               </select>
             </label>
           </div>
           <label>
-            Task
+            Задача
             <textarea
               value={taskText}
               onChange={(event) => setTaskText(event.target.value)}
@@ -445,18 +460,18 @@ export default function App() {
           </label>
           <div className="control-grid">
             <label>
-              Codex model
+              Модель Codex
               <input value={codexModel} onChange={(event) => setCodexModel(event.target.value)} />
             </label>
             <label>
-              Claude model
+              Модель Claude
               <input
                 value={claudeModel}
                 onChange={(event) => setClaudeModel(event.target.value)}
               />
             </label>
             <label>
-              Claude budget
+              Бюджет Claude
               <input
                 type="number"
                 min="1"
@@ -471,16 +486,16 @@ export default function App() {
                 checked={fullPcAccess}
                 onChange={(event) => setFullPcAccess(event.target.checked)}
               />
-              Full PC access for worker
+              Полный доступ к ПК для воркера
             </label>
           </div>
           <div className="usage-panel">
             <div className="section-title compact">
               <Gauge size={18} />
-              <h3>Usage Guard</h3>
+              <h3>Ограничитель usage</h3>
             </div>
             <label>
-              Current session estimate: {sessionUsage}%
+              Текущая оценка сессии: {sessionUsage}%
               <input
                 type="range"
                 min="0"
@@ -490,7 +505,7 @@ export default function App() {
               />
             </label>
             <label>
-              Stop heavy work at: {guardLevel}%
+              Останавливать тяжёлую работу при: {guardLevel}%
               <input
                 type="range"
                 min="70"
@@ -501,8 +516,8 @@ export default function App() {
             </label>
             <p className={guardedHeavyWork() ? "warning-text" : "muted"}>
               {guardedHeavyWork()
-                ? "Heavy work is paused. Use plan/review or save context before continuing."
-                : "Heavy work may start. The guard is local and conservative for now."}
+                ? "Тяжёлая работа остановлена. Используй план/ревью или сохрани контекст перед продолжением."
+                : "Тяжёлую работу можно запускать. Ограничитель пока локальный и осторожный."}
             </p>
           </div>
         </div>
@@ -510,7 +525,7 @@ export default function App() {
         <div className="side-pane">
           <div className="section-title">
             <KeyRound size={19} />
-            <h2>Connections</h2>
+            <h2>Подключения</h2>
           </div>
           {(["kimi", "perplexity"] as const).map((provider) => {
             const status = providerByName(providerStatuses, provider);
@@ -519,12 +534,12 @@ export default function App() {
                 <div className="provider-head">
                   <strong>{provider}</strong>
                   <span className={status?.configured ? "pill ok" : "pill warn"}>
-                    {status?.key_source ?? "missing"}
+                    {statusLabel(status?.key_source)}
                   </span>
                 </div>
                 <input
                   type="password"
-                  placeholder="API key"
+                  placeholder="API-ключ"
                   value={providerForms[provider].apiKey}
                   onChange={(event) =>
                     setProviderForms((current) => ({
@@ -544,7 +559,7 @@ export default function App() {
                     }
                   />
                   <button className="ghost-button" onClick={() => saveProvider(provider)} disabled={busy}>
-                    Save
+                    Сохранить
                   </button>
                 </div>
                 <input
@@ -560,12 +575,12 @@ export default function App() {
             );
           })}
           <p className="small-note">
-            Keys are stored outside the repo in local app data. This v0 does not encrypt them yet.
+            Ключи хранятся вне репозитория в локальных данных приложения. В v0 они пока не шифруются.
           </p>
 
           <div className="section-title">
             <FileText size={19} />
-            <h2>Research Prompt</h2>
+            <h2>Research-запрос</h2>
           </div>
           <textarea
             value={providerPrompt}
@@ -574,10 +589,10 @@ export default function App() {
           />
           <div className="button-row">
             <button className="ghost-button" onClick={() => ask("kimi")} disabled={busy}>
-              Ask Kimi
+              Спросить Kimi
             </button>
             <button className="ghost-button" onClick={() => ask("perplexity")} disabled={busy}>
-              Ask Perplexity
+              Спросить Perplexity
             </button>
           </div>
         </div>
@@ -594,16 +609,16 @@ export default function App() {
         <article>
           <div className="section-title">
             <Terminal size={19} />
-            <h2>Agent Status</h2>
+            <h2>Статус агентов</h2>
           </div>
-          <pre>{statusOutput || "Loading..."}</pre>
+          <pre>{statusOutput || "Загрузка..."}</pre>
         </article>
         <article>
           <div className="section-title">
             <FileText size={19} />
-            <h2>Events</h2>
+            <h2>События</h2>
           </div>
-          <pre>{eventsOutput || "Loading..."}</pre>
+          <pre>{eventsOutput || "Загрузка..."}</pre>
         </article>
       </section>
 
@@ -611,29 +626,29 @@ export default function App() {
         <article>
           <div className="section-title">
             <Terminal size={19} />
-            <h2>Run Log</h2>
+            <h2>Лог запуска</h2>
           </div>
           <div className="field-row">
             <input
-              placeholder="RUN_ID from launch output"
+              placeholder="RUN_ID из вывода запуска"
               value={runId}
               onChange={(event) => setRunId(event.target.value)}
             />
             <button className="ghost-button" onClick={loadRunLog} disabled={busy}>
-              Load
+              Загрузить
             </button>
           </div>
-          <pre>{runOutput || "Launch output and run logs will appear here."}</pre>
+          <pre>{runOutput || "Здесь появятся вывод запуска и логи."}</pre>
         </article>
         <article>
           <div className="section-title">
             <Search size={19} />
-            <h2>Provider Notes</h2>
+            <h2>Заметки провайдеров</h2>
           </div>
           <pre>
             {providerReplies.kimi || providerReplies.perplexity
               ? [providerReplies.kimi, providerReplies.perplexity].filter(Boolean).join("\n\n")
-              : "Kimi and Perplexity notes will appear here after you connect API keys."}
+              : "Заметки Kimi и Perplexity появятся здесь после подключения API-ключей."}
           </pre>
         </article>
       </section>
@@ -645,14 +660,14 @@ export default function App() {
           onClick={() => openWorkspacePath(workspace?.user_guide_path)}
           disabled={!workspace}
         >
-          guide
+          инструкция
         </button>
         <button
           className="link-button"
           onClick={() => openWorkspacePath(workspace?.provider_config_path)}
           disabled={!workspace}
         >
-          provider config
+          config провайдеров
         </button>
         <button className="link-button" onClick={() => openWorkspacePath(workspace?.bus_root)} disabled={!workspace}>
           agent bus

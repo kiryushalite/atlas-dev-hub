@@ -29,6 +29,7 @@ type ProviderStatus = {
 type ProviderReply = {
   provider: string;
   model: string;
+  route: string;
   content: string;
 };
 
@@ -97,6 +98,10 @@ function statusLabel(value?: string) {
   }
 }
 
+function errorText(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [providerStatuses, setProviderStatuses] = useState<ProviderStatus[]>([]);
@@ -125,6 +130,10 @@ export default function App() {
     "Проверь текущий план Atlas Dev Hub. Назови риски и один конкретный следующий шаг."
   );
   const [providerReplies, setProviderReplies] = useState<Record<string, string>>({});
+  const [providerBusy, setProviderBusy] = useState<Record<"kimi" | "perplexity", boolean>>({
+    kimi: false,
+    perplexity: false
+  });
   const [providerForms, setProviderForms] = useState({
     kimi: {
       apiKey: "",
@@ -182,7 +191,7 @@ export default function App() {
       await Promise.all([refreshWorkspace(), refreshProviders(), refreshStatus()]);
       setNotice("Рабочая среда подключена.");
     } catch (error) {
-      setNotice(String(error));
+      setNotice(errorText(error));
     }
   }
 
@@ -230,15 +239,33 @@ export default function App() {
   }
 
   async function ask(provider: "kimi" | "perplexity") {
-    const reply = await invoke<ProviderReply>("ask_provider", {
-      provider,
-      prompt: providerPrompt
-    });
+    setProviderBusy((current) => ({ ...current, [provider]: true }));
     setProviderReplies((current) => ({
       ...current,
-      [provider]: `[${reply.provider} / ${reply.model}]\n${reply.content}`
+      [provider]: `[${provider}]\nЗапрос отправлен...`
     }));
-    setNotice(`${provider} ответил.`);
+    try {
+      const reply = await invoke<ProviderReply>("ask_provider", {
+        provider,
+        prompt: providerPrompt
+      });
+      setProviderReplies((current) => ({
+        ...current,
+        [provider]: `[${reply.provider} / ${reply.model} / ${reply.route}]\n${reply.content}`
+      }));
+      setNotice(`${provider} ответил.`);
+      return true;
+    } catch (error) {
+      const message = errorText(error);
+      setProviderReplies((current) => ({
+        ...current,
+        [provider]: `[${provider}]\nОшибка: ${message}`
+      }));
+      setNotice(`${provider}: ${message}`);
+      return false;
+    } finally {
+      setProviderBusy((current) => ({ ...current, [provider]: false }));
+    }
   }
 
   async function startSelected() {
@@ -258,22 +285,45 @@ export default function App() {
     }
 
     setBusy(true);
+    const results: string[] = [];
     try {
       if (selectedAgents.codex) {
-        await startCodex();
+        try {
+          await startCodex();
+          results.push("Codex: задача запущена.");
+        } catch (error) {
+          results.push(`Codex: ошибка: ${errorText(error)}`);
+        }
       }
       if (selectedAgents.claude) {
-        await startClaude();
+        try {
+          await startClaude();
+          results.push("Claude: задача запущена.");
+        } catch (error) {
+          results.push(`Claude: ошибка: ${errorText(error)}`);
+        }
       }
       if (selectedAgents.kimi) {
-        await ask("kimi");
+        const ok = await ask("kimi");
+        results.push(ok ? "Kimi: ответ получен." : "Kimi: ошибка, см. заметки провайдеров.");
       }
       if (selectedAgents.perplexity) {
-        await ask("perplexity");
+        const ok = await ask("perplexity");
+        results.push(
+          ok ? "Perplexity: ответ получен." : "Perplexity: ошибка, см. заметки провайдеров."
+        );
       }
-      setNotice("Выбранные агенты прошли цикл запуска.");
+      const failed = results.filter((item) => item.includes("ошибка"));
+      setRunOutput((current) =>
+        [`Цикл выбранных агентов:\n${results.join("\n")}`, current].filter(Boolean).join("\n\n")
+      );
+      setNotice(
+        failed.length > 0
+          ? `Цикл завершён с частичными ошибками: ${failed.length}.`
+          : "Выбранные агенты прошли цикл запуска."
+      );
     } catch (error) {
-      setNotice(String(error));
+      setNotice(errorText(error));
     } finally {
       setBusy(false);
     }
@@ -296,7 +346,7 @@ export default function App() {
       }));
       setNotice(`Подключение ${provider} сохранено локально.`);
     } catch (error) {
-      setNotice(String(error));
+      setNotice(errorText(error));
     } finally {
       setBusy(false);
     }
@@ -316,7 +366,7 @@ export default function App() {
       setRunOutput(output);
       setNotice("Лог запуска загружен.");
     } catch (error) {
-      setNotice(String(error));
+      setNotice(errorText(error));
     } finally {
       setBusy(false);
     }
@@ -588,11 +638,19 @@ export default function App() {
             rows={5}
           />
           <div className="button-row">
-            <button className="ghost-button" onClick={() => ask("kimi")} disabled={busy}>
-              Спросить Kimi
+            <button
+              className="ghost-button"
+              onClick={() => ask("kimi")}
+              disabled={busy || providerBusy.kimi}
+            >
+              {providerBusy.kimi ? "Kimi думает..." : "Спросить Kimi"}
             </button>
-            <button className="ghost-button" onClick={() => ask("perplexity")} disabled={busy}>
-              Спросить Perplexity
+            <button
+              className="ghost-button"
+              onClick={() => ask("perplexity")}
+              disabled={busy || providerBusy.perplexity}
+            >
+              {providerBusy.perplexity ? "Perplexity ищет..." : "Спросить Perplexity"}
             </button>
           </div>
         </div>

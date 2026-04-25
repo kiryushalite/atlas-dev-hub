@@ -60,6 +60,7 @@ struct ProviderStatus {
 struct ProviderReply {
     provider: String,
     model: String,
+    route: String,
     content: String,
 }
 
@@ -351,7 +352,9 @@ fn configured_provider(provider: &str, config: &ProvidersConfig) -> Result<Provi
         "kimi" => env::var("KIMI_API_KEY")
             .ok()
             .or_else(|| env::var("MOONSHOT_API_KEY").ok()),
-        "perplexity" => env::var("PERPLEXITY_API_KEY").ok(),
+        "perplexity" => env::var("PERPLEXITY_API_KEY")
+            .ok()
+            .or_else(|| env::var("OPENROUTER_API_KEY").ok()),
         _ => None,
     };
     let key_source = if config_key.is_some() {
@@ -387,10 +390,24 @@ fn provider_api_key(provider: &str, config: &ProvidersConfig) -> Result<Option<S
         "kimi" => env::var("KIMI_API_KEY")
             .ok()
             .or_else(|| env::var("MOONSHOT_API_KEY").ok()),
-        "perplexity" => env::var("PERPLEXITY_API_KEY").ok(),
+        "perplexity" => env::var("PERPLEXITY_API_KEY")
+            .ok()
+            .or_else(|| env::var("OPENROUTER_API_KEY").ok()),
         _ => None,
     };
     Ok(env_key.filter(|value| !value.trim().is_empty()))
+}
+
+fn is_openrouter_url(base_url: &str) -> bool {
+    base_url.to_lowercase().contains("openrouter.ai")
+}
+
+fn openrouter_model(provider: &str, model: &str) -> String {
+    if provider == "perplexity" && !model.contains('/') {
+        format!("perplexity/{model}")
+    } else {
+        model.to_string()
+    }
 }
 
 fn chat_url(base_url: &str) -> String {
@@ -407,7 +424,26 @@ fn truncate_error(text: &str) -> String {
     if text.len() <= LIMIT {
         text.to_string()
     } else {
-        format!("{}...", &text[..LIMIT])
+        let mut end = LIMIT;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &text[..end])
+    }
+}
+
+fn provider_user_error(provider: &str, status: reqwest::StatusCode, body: &str) -> String {
+    match status.as_u16() {
+        401 | 403 => format!(
+            "{provider}: API вернул {status}. Ключ найден, но маршрут или тип ключа не подходит для этого API."
+        ),
+        429 => format!(
+            "{provider}: API вернул 429. Ключ найден, backend дошёл до провайдера, но сейчас лимит/квота."
+        ),
+        _ => format!(
+            "{provider}: API вернул {status}: {}",
+            truncate_error(body)
+        ),
     }
 }
 
@@ -1115,7 +1151,9 @@ fn save_provider_config(
     let provider = provider.to_lowercase();
     let mut config = read_provider_config();
     let entry = provider_entry_mut(&provider, &mut config)?;
-    entry.api_key = Some(api_key.trim().to_string()).filter(|value| !value.is_empty());
+    if !api_key.trim().is_empty() {
+        entry.api_key = Some(api_key.trim().to_string());
+    }
     entry.model = Some(model.trim().to_string()).filter(|value| !value.is_empty());
     entry.base_url = Some(base_url.trim().to_string()).filter(|value| !value.is_empty());
     write_provider_config(&config)?;
@@ -1134,58 +1172,85 @@ async fn ask_provider(provider: String, prompt: String) -> Result<ProviderReply,
         ));
     };
 
-    let body = serde_json::json!({
-        "model": status.model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You support Atlas Dev Hub. Give concise, actionable engineering advice. Do not claim you changed files unless a tool did it."
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        "temperature": 0.2
-    });
-
     let client = reqwest::Client::new();
-    let response = client
-        .post(chat_url(&status.base_url))
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|err| err.to_string())?;
-    let http_status = response.status();
-    let text = response.text().await.map_err(|err| err.to_string())?;
-    if !http_status.is_success() {
-        return Err(format!(
-            "{} API returned {}: {}",
-            provider,
-            http_status,
-            truncate_error(&text)
+    let mut attempts = vec![(
+        status.base_url.clone(),
+        if is_openrouter_url(&status.base_url) {
+            openrouter_model(&provider, &status.model)
+        } else {
+            status.model.clone()
+        },
+    )];
+    if provider == "perplexity" && !is_openrouter_url(&status.base_url) {
+        attempts.push((
+            "https://openrouter.ai/api/v1".to_string(),
+            openrouter_model(&provider, &status.model),
         ));
     }
 
-    let parsed: ChatCompletionResponse = serde_json::from_str(&text).map_err(|err| {
-        format!(
-            "Could not parse provider response: {err}\n{}",
-            truncate_error(&text)
-        )
-    })?;
-    let content = parsed
-        .choices
-        .into_iter()
-        .next()
-        .map(|choice| choice.message.content)
-        .unwrap_or_else(|| "No answer returned.".to_string());
+    let mut failures = Vec::new();
+    for (index, (base_url, model)) in attempts.into_iter().enumerate() {
+        let body = serde_json::json!({
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You support Atlas Dev Hub. Give concise, actionable engineering advice. Do not claim you changed files unless a tool did it."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": 0.2
+        });
 
-    Ok(ProviderReply {
-        provider,
-        model: status.model,
-        content,
-    })
+        let mut request = client
+            .post(chat_url(&base_url))
+            .bearer_auth(&api_key)
+            .json(&body);
+        if is_openrouter_url(&base_url) {
+            request = request
+                .header("HTTP-Referer", "http://localhost")
+                .header("X-Title", "Atlas Dev Hub");
+        }
+        let response = request.send().await.map_err(|err| err.to_string())?;
+        let http_status = response.status();
+        let text = response.text().await.map_err(|err| err.to_string())?;
+        if !http_status.is_success() {
+            failures.push(provider_user_error(&provider, http_status, &text));
+            if provider == "perplexity"
+                && index == 0
+                && !is_openrouter_url(&base_url)
+                && matches!(http_status.as_u16(), 401 | 403)
+            {
+                continue;
+            }
+            return Err(failures.join("\n"));
+        }
+
+        let parsed: ChatCompletionResponse = serde_json::from_str(&text).map_err(|err| {
+            format!(
+                "Could not parse provider response: {err}\n{}",
+                truncate_error(&text)
+            )
+        })?;
+        let content = parsed
+            .choices
+            .into_iter()
+            .next()
+            .map(|choice| choice.message.content)
+            .unwrap_or_else(|| "No answer returned.".to_string());
+
+        return Ok(ProviderReply {
+            provider,
+            model,
+            route: base_url,
+            content,
+        });
+    }
+
+    Err(failures.join("\n"))
 }
 
 #[tauri::command]

@@ -63,6 +63,7 @@ struct ProviderReply {
     provider: String,
     model: String,
     route: String,
+    fallback_used: bool,
     content: String,
 }
 
@@ -1397,6 +1398,7 @@ async fn ask_provider(provider: String, prompt: String) -> Result<ProviderReply,
         return Ok(ProviderReply {
             provider,
             model: attempt.model,
+            fallback_used: attempt.route == "OpenRouter fallback",
             route: attempt.route,
             content,
         });

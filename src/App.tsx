@@ -30,10 +30,81 @@ type ProviderReply = {
   provider: string;
   model: string;
   route: string;
+  fallback_used: boolean;
   content: string;
 };
 
 type AgentId = "codex" | "claude" | "kimi" | "perplexity";
+type AgentRunStatus = "queued" | "running" | "success" | "error" | "skipped";
+
+type AgentRun = {
+  agent: AgentId;
+  status: AgentRunStatus;
+  provider: string;
+  model: string;
+  route: string;
+  profile: string;
+  fallbackUsed: boolean;
+  result: string;
+  error: string;
+  updatedAt: number;
+};
+
+type AgentMeta = Omit<AgentRun, "agent" | "status" | "result" | "error" | "updatedAt">;
+
+const agentOrder: AgentId[] = ["codex", "claude", "kimi", "perplexity"];
+
+const defaultSelectedAgents: Record<AgentId, boolean> = {
+  codex: false,
+  claude: false,
+  kimi: false,
+  perplexity: false
+};
+
+const agentModelDefaults: Record<
+  AgentId,
+  {
+    provider: string;
+    current: string;
+    target: string;
+    fallback: string;
+    route: string;
+    profile: string;
+  }
+> = {
+  codex: {
+    provider: "OpenAI Codex CLI",
+    current: "gpt-5.5",
+    target: "gpt-5.5",
+    fallback: "gpt-5.4",
+    route: "background worktree",
+    profile: "work / review / plan"
+  },
+  claude: {
+    provider: "Claude Code CLI",
+    current: "sonnet",
+    target: "Sonnet 4.6 Adaptive: id не подтверждён CLI",
+    fallback: "Haiku 4.5 или текущий alias",
+    route: "background worktree",
+    profile: "permission mode by task mode"
+  },
+  kimi: {
+    provider: "OpenRouter + Moonshot",
+    current: "moonshotai/kimi-k2.6",
+    target: "moonshotai/kimi-k2.6",
+    fallback: "moonshotai/kimi-k2.5",
+    route: "OpenRouter fallback",
+    profile: "research / summary"
+  },
+  perplexity: {
+    provider: "OpenRouter + Perplexity",
+    current: "perplexity/sonar",
+    target: "perplexity/sonar",
+    fallback: "perplexity/sonar-pro-search",
+    route: "OpenRouter fallback",
+    profile: "web research"
+  }
+};
 
 const agentCopy: Record<
   AgentId,
@@ -102,15 +173,110 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function storedSelectedAgents() {
+  if (typeof window === "undefined") {
+    return defaultSelectedAgents;
+  }
+  try {
+    const raw = window.localStorage.getItem("adg.selectedAgents");
+    if (!raw) {
+      return defaultSelectedAgents;
+    }
+    const parsed = JSON.parse(raw) as Partial<Record<AgentId, boolean>>;
+    return {
+      codex: Boolean(parsed.codex),
+      claude: Boolean(parsed.claude),
+      kimi: Boolean(parsed.kimi),
+      perplexity: Boolean(parsed.perplexity)
+    };
+  } catch {
+    return defaultSelectedAgents;
+  }
+}
+
+function storedText(key: string, fallback: string) {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+  return window.localStorage.getItem(key) || fallback;
+}
+
+function initialAgentRuns(): Record<AgentId, AgentRun> {
+  return Object.fromEntries(
+    agentOrder.map((agent) => [
+      agent,
+      {
+        agent,
+        status: "skipped",
+        provider: agentModelDefaults[agent].provider,
+        model: agentModelDefaults[agent].current,
+        route: agentModelDefaults[agent].route,
+        profile: agentModelDefaults[agent].profile,
+        fallbackUsed: false,
+        result: "Не выбран.",
+        error: "",
+        updatedAt: Date.now()
+      }
+    ])
+  ) as Record<AgentId, AgentRun>;
+}
+
+function runStatusLabel(status: AgentRunStatus) {
+  switch (status) {
+    case "queued":
+      return "queued";
+    case "running":
+      return "running";
+    case "success":
+      return "success";
+    case "error":
+      return "error";
+    case "skipped":
+      return "skipped";
+  }
+}
+
+function recommendationForTask(task: string) {
+  const text = task.toLowerCase();
+  const recommendations: AgentId[] = [];
+  const hasAny = (words: string[]) => words.some((word) => text.includes(word));
+  if (
+    hasAny([
+      "сейчас",
+      "актуально",
+      "сегодня",
+      "новости",
+      "цена",
+      "курс",
+      "последняя версия",
+      "документация",
+      "найди в интернете"
+    ])
+  ) {
+    recommendations.push("perplexity");
+  }
+  if (hasAny(["объясни", "инструкция", "суммар", "документ", "структур", "переведи"])) {
+    recommendations.push("kimi");
+  }
+  if (hasAny(["код", "сборк", "ошибк", "diff", "тест", "build", "fix"])) {
+    recommendations.push("codex");
+  }
+  if (hasAny(["архитект", "ревью", "trade-off", "tradeoff", "риски", "подход"])) {
+    recommendations.push("claude");
+  }
+  const unique = Array.from(new Set(recommendations));
+  if (unique.length === 0) {
+    return "Маршрут: выбери агентов вручную по роли задачи.";
+  }
+  return `Рекомендация: ${unique.map((agent) => agentCopy[agent].title).join(" + ")}.`;
+}
+
 export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [providerStatuses, setProviderStatuses] = useState<ProviderStatus[]>([]);
-  const [selectedAgents, setSelectedAgents] = useState<Record<AgentId, boolean>>({
-    codex: true,
-    claude: false,
-    kimi: false,
-    perplexity: false
-  });
+  const [selectedAgents, setSelectedAgents] = useState<Record<AgentId, boolean>>(
+    storedSelectedAgents
+  );
   const [taskName, setTaskName] = useState("atlas-next-step");
   const [taskText, setTaskText] = useState(
     "Продолжи план разработки Atlas. Держи изменения узкими, координируйся через agent bus и докладывай риски перед merge."
@@ -119,13 +285,18 @@ export default function App() {
   const [fullPcAccess, setFullPcAccess] = useState(false);
   const [sessionUsage, setSessionUsage] = useState(65);
   const [guardLevel, setGuardLevel] = useState(75);
-  const [codexModel, setCodexModel] = useState("gpt-5.5");
-  const [claudeModel, setClaudeModel] = useState("sonnet");
+  const [codexModel, setCodexModel] = useState(() =>
+    storedText("adg.codexModel", agentModelDefaults.codex.current)
+  );
+  const [claudeModel, setClaudeModel] = useState(() =>
+    storedText("adg.claudeModel", agentModelDefaults.claude.current)
+  );
   const [claudeBudget, setClaudeBudget] = useState(5);
   const [statusOutput, setStatusOutput] = useState("");
   const [eventsOutput, setEventsOutput] = useState("");
   const [runId, setRunId] = useState("");
   const [runOutput, setRunOutput] = useState("");
+  const [agentRuns, setAgentRuns] = useState<Record<AgentId, AgentRun>>(initialAgentRuns);
   const [providerPrompt, setProviderPrompt] = useState(
     "Проверь текущий план Atlas Dev Hub. Назови риски и один конкретный следующий шаг."
   );
@@ -153,6 +324,19 @@ export default function App() {
     () => Object.values(selectedAgents).filter(Boolean).length,
     [selectedAgents]
   );
+  const routeRecommendation = useMemo(() => recommendationForTask(taskText), [taskText]);
+
+  useEffect(() => {
+    window.localStorage.setItem("adg.selectedAgents", JSON.stringify(selectedAgents));
+  }, [selectedAgents]);
+
+  useEffect(() => {
+    window.localStorage.setItem("adg.codexModel", codexModel);
+  }, [codexModel]);
+
+  useEffect(() => {
+    window.localStorage.setItem("adg.claudeModel", claudeModel);
+  }, [claudeModel]);
 
   async function refreshWorkspace() {
     const info = await invoke<WorkspaceInfo>("workspace_info");
@@ -211,6 +395,71 @@ export default function App() {
     return mode === "work" && sessionUsage >= guardLevel;
   }
 
+  function agentMeta(agent: AgentId): AgentMeta {
+    const kimiStatus = providerByName(providerStatuses, "kimi");
+    const perplexityStatus = providerByName(providerStatuses, "perplexity");
+    if (agent === "codex") {
+      return {
+        provider: agentModelDefaults.codex.provider,
+        model: codexModel || agentModelDefaults.codex.current,
+        route: agentModelDefaults.codex.route,
+        profile: mode,
+        fallbackUsed: false
+      };
+    }
+    if (agent === "claude") {
+      return {
+        provider: agentModelDefaults.claude.provider,
+        model: claudeModel || agentModelDefaults.claude.current,
+        route: agentModelDefaults.claude.route,
+        profile: `${mode}, budget $${claudeBudget}`,
+        fallbackUsed: false
+      };
+    }
+    if (agent === "kimi") {
+      return {
+        provider: agentModelDefaults.kimi.provider,
+        model: kimiStatus?.model || agentModelDefaults.kimi.current,
+        route: "Moonshot direct -> OpenRouter fallback",
+        profile: agentModelDefaults.kimi.profile,
+        fallbackUsed: true
+      };
+    }
+    return {
+      provider: agentModelDefaults.perplexity.provider,
+      model: perplexityStatus?.model || agentModelDefaults.perplexity.current,
+      route: "Perplexity direct -> OpenRouter fallback",
+      profile: agentModelDefaults.perplexity.profile,
+      fallbackUsed: true
+    };
+  }
+
+  function makeRun(agent: AgentId, status: AgentRunStatus, message: string): AgentRun {
+    return {
+      agent,
+      status,
+      ...agentMeta(agent),
+      result: status === "error" ? "" : message,
+      error: status === "error" ? message : "",
+      updatedAt: Date.now()
+    };
+  }
+
+  function updateAgentRun(agent: AgentId, patch: Partial<AgentRun>) {
+    setAgentRuns((current) => ({
+      ...current,
+      [agent]: {
+        ...(current[agent] ?? makeRun(agent, "skipped", "Не выбран.")),
+        ...patch,
+        updatedAt: Date.now()
+      }
+    }));
+  }
+
+  function runIdFromOutput(output: string) {
+    return output.match(/RUN_ID=([^\s]+)/)?.[1] ?? "";
+  }
+
   async function startClaude() {
     const output = await invoke<string>("start_claude_task", {
       name: trimName(taskName) || "claude-task",
@@ -220,9 +469,8 @@ export default function App() {
       model: claudeModel,
       maxBudgetUsd: claudeBudget
     });
-    setRunOutput(output);
-    setNotice("Задача Claude запущена.");
     await refreshStatus();
+    return output;
   }
 
   async function startCodex() {
@@ -233,12 +481,11 @@ export default function App() {
       fullPcAccess,
       model: codexModel
     });
-    setRunOutput(output);
-    setNotice("Задача Codex запущена.");
     await refreshStatus();
+    return output;
   }
 
-  async function ask(provider: "kimi" | "perplexity") {
+  async function ask(provider: "kimi" | "perplexity", prompt = providerPrompt) {
     setProviderBusy((current) => ({ ...current, [provider]: true }));
     setProviderReplies((current) => ({
       ...current,
@@ -247,14 +494,16 @@ export default function App() {
     try {
       const reply = await invoke<ProviderReply>("ask_provider", {
         provider,
-        prompt: providerPrompt
+        prompt
       });
       setProviderReplies((current) => ({
         ...current,
-        [provider]: `[${reply.provider} / ${reply.model} / ${reply.route}]\n${reply.content}`
+        [provider]: `[${reply.provider} / ${reply.model} / ${reply.route} / fallback: ${
+          reply.fallback_used ? "yes" : "no"
+        }]\n${reply.content}`
       }));
       setNotice(`${provider} ответил.`);
-      return true;
+      return reply;
     } catch (error) {
       const message = errorText(error);
       setProviderReplies((current) => ({
@@ -262,7 +511,7 @@ export default function App() {
         [provider]: `[${provider}]\nОшибка: ${message}`
       }));
       setNotice(`${provider}: ${message}`);
-      return false;
+      throw error;
     } finally {
       setProviderBusy((current) => ({ ...current, [provider]: false }));
     }
@@ -285,37 +534,82 @@ export default function App() {
     }
 
     setBusy(true);
-    const results: string[] = [];
+    const selected = agentOrder.filter((agent) => selectedAgents[agent]);
+    const cycleRuns: Record<AgentId, AgentRun> = Object.fromEntries(
+      agentOrder.map((agent) => [
+        agent,
+        selectedAgents[agent]
+          ? makeRun(agent, "queued", "Ожидает запуска.")
+          : makeRun(agent, "skipped", "Не выбран.")
+      ])
+    ) as Record<AgentId, AgentRun>;
+    setAgentRuns(cycleRuns);
+    const results: AgentRun[] = [];
     try {
-      if (selectedAgents.codex) {
+      for (const agent of selected) {
+        updateAgentRun(agent, {
+          status: "running",
+          result: "В работе...",
+          error: "",
+          ...agentMeta(agent)
+        });
         try {
-          await startCodex();
-          results.push("Codex: задача запущена.");
+          if (agent === "codex") {
+            const output = await startCodex();
+            const runId = runIdFromOutput(output);
+            const successRun: AgentRun = {
+              ...makeRun(agent, "success", runId ? `Фоновая задача запущена: ${runId}` : output),
+              route: "Codex background worktree",
+              model: codexModel || agentModelDefaults.codex.current
+            };
+            results.push(successRun);
+            updateAgentRun(agent, successRun);
+            continue;
+          }
+          if (agent === "claude") {
+            const output = await startClaude();
+            const runId = runIdFromOutput(output);
+            const successRun: AgentRun = {
+              ...makeRun(agent, "success", runId ? `Фоновая задача запущена: ${runId}` : output),
+              route: "Claude Code background worktree",
+              model: claudeModel || agentModelDefaults.claude.current
+            };
+            results.push(successRun);
+            updateAgentRun(agent, successRun);
+            continue;
+          }
+          if (agent === "kimi" || agent === "perplexity") {
+            const reply = await ask(agent, taskText);
+            const successRun: AgentRun = {
+              ...makeRun(agent, "success", reply.content),
+              provider: reply.provider,
+              model: reply.model,
+              route: reply.route,
+              fallbackUsed: reply.fallback_used
+            };
+            results.push(successRun);
+            updateAgentRun(agent, successRun);
+          }
         } catch (error) {
-          results.push(`Codex: ошибка: ${errorText(error)}`);
+          const failedRun = makeRun(agent, "error", errorText(error));
+          results.push(failedRun);
+          updateAgentRun(agent, failedRun);
         }
       }
-      if (selectedAgents.claude) {
-        try {
-          await startClaude();
-          results.push("Claude: задача запущена.");
-        } catch (error) {
-          results.push(`Claude: ошибка: ${errorText(error)}`);
-        }
-      }
-      if (selectedAgents.kimi) {
-        const ok = await ask("kimi");
-        results.push(ok ? "Kimi: ответ получен." : "Kimi: ошибка, см. заметки провайдеров.");
-      }
-      if (selectedAgents.perplexity) {
-        const ok = await ask("perplexity");
-        results.push(
-          ok ? "Perplexity: ответ получен." : "Perplexity: ошибка, см. заметки провайдеров."
-        );
-      }
-      const failed = results.filter((item) => item.includes("ошибка"));
+      const failed = results.filter((item) => item.status === "error");
+      const succeeded = results.filter((item) => item.status === "success");
+      const skipped = agentOrder.filter((agent) => !selectedAgents[agent]);
       setRunOutput((current) =>
-        [`Цикл выбранных агентов:\n${results.join("\n")}`, current].filter(Boolean).join("\n\n")
+        [
+          `Цикл выбранных агентов:
+success: ${succeeded.map((item) => agentCopy[item.agent].title).join(", ") || "нет"}
+error: ${failed.map((item) => agentCopy[item.agent].title).join(", ") || "нет"}
+skipped: ${skipped.map((agent) => agentCopy[agent].title).join(", ") || "нет"}
+Дальше: смотри отдельные карточки результатов и route/model по каждому агенту.`,
+          current
+        ]
+          .filter(Boolean)
+          .join("\n\n")
       );
       setNotice(
         failed.length > 0
@@ -441,7 +735,7 @@ export default function App() {
       </section>
 
       <section className="agent-grid" aria-label="Панели агентов">
-        {(Object.keys(agentCopy) as AgentId[]).map((agent) => {
+        {agentOrder.map((agent) => {
           const Icon = agentCopy[agent].icon;
           const provider =
             agent === "kimi" || agent === "perplexity"
@@ -471,6 +765,11 @@ export default function App() {
               <h2>{agentCopy[agent].title}</h2>
               <p className="agent-role">{agentCopy[agent].role}</p>
               <p>{agentCopy[agent].tone}</p>
+              <div className="agent-model">
+                <span>{agent === "codex" ? codexModel : agent === "claude" ? claudeModel : agentModelDefaults[agent].current}</span>
+                <small>{agentModelDefaults[agent].route}</small>
+                <small>fallback: {agentModelDefaults[agent].fallback}</small>
+              </div>
               <div className={ready ? "pill ok" : "pill warn"}>
                 {ready ? <CheckCircle2 size={14} /> : <ShieldAlert size={14} />}
                 {ready ? "подключён" : "нужна настройка"}
@@ -508,6 +807,7 @@ export default function App() {
               rows={8}
             />
           </label>
+          <p className="route-hint">{routeRecommendation}</p>
           <div className="control-grid">
             <label>
               Модель Codex
@@ -569,6 +869,32 @@ export default function App() {
                 ? "Тяжёлая работа остановлена. Используй план/ревью или сохрани контекст перед продолжением."
                 : "Тяжёлую работу можно запускать. Ограничитель пока локальный и осторожный."}
             </p>
+          </div>
+          <div className="orchestration-panel">
+            <div className="section-title compact">
+              <Terminal size={18} />
+              <h3>Запуск выбранных</h3>
+            </div>
+            <div className="run-grid">
+              {agentOrder.map((agent) => {
+                const run = agentRuns[agent] ?? makeRun(agent, "skipped", "Не выбран.");
+                return (
+                  <article className={`run-card ${run.status}`} key={agent}>
+                    <div className="run-card-head">
+                      <strong>{agentCopy[agent].title}</strong>
+                      <span className={`run-status ${run.status}`}>{runStatusLabel(run.status)}</span>
+                    </div>
+                    <div className="run-meta">
+                      <span>{run.provider}</span>
+                      <span>{run.model}</span>
+                      <span>{run.route}</span>
+                      <span>fallback: {run.fallbackUsed ? "yes" : "no"}</span>
+                    </div>
+                    <p>{run.error || run.result}</p>
+                  </article>
+                );
+              })}
+            </div>
           </div>
         </div>
 
@@ -640,14 +966,14 @@ export default function App() {
           <div className="button-row">
             <button
               className="ghost-button"
-              onClick={() => ask("kimi")}
+              onClick={() => void ask("kimi").catch(() => undefined)}
               disabled={busy || providerBusy.kimi}
             >
               {providerBusy.kimi ? "Kimi думает..." : "Спросить Kimi"}
             </button>
             <button
               className="ghost-button"
-              onClick={() => ask("perplexity")}
+              onClick={() => void ask("perplexity").catch(() => undefined)}
               disabled={busy || providerBusy.perplexity}
             >
               {providerBusy.perplexity ? "Perplexity ищет..." : "Спросить Perplexity"}

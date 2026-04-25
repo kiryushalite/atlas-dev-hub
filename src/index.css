@@ -242,6 +242,22 @@ h3 {
   line-height: 1.45;
 }
 
+.agent-model,
+.run-meta {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0;
+  color: #4b5565;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.agent-model span,
+.run-meta span:first-child {
+  color: #253041;
+  font-weight: 800;
+}
+
 .agent-role {
   color: #253041 !important;
   font-weight: 700;
@@ -564,6 +580,94 @@ textarea:focus {
   border-radius: 8px;
   padding: 12px;
   background: #f8fcfb;
+}
+
+.route-hint {
+  margin: 8px 0 0;
+  color: #1957d2;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.orchestration-panel {
+  margin-top: 14px;
+  border: 1px solid #d7dde7;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfe;
+}
+
+.run-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.run-card {
+  min-height: 150px;
+  border: 1px solid #d7dde7;
+  border-radius: 8px;
+  padding: 12px;
+  background: #ffffff;
+}
+
+.run-card.success {
+  border-color: #9bd8c0;
+}
+
+.run-card.error {
+  border-color: #f4a7a7;
+}
+
+.run-card.running,
+.run-card.queued {
+  border-color: #9bbcff;
+}
+
+.run-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.run-status {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.run-status.success {
+  color: #0b6b4a;
+  background: #e5f6ef;
+}
+
+.run-status.error {
+  color: #9a3412;
+  background: #ffedd5;
+}
+
+.run-status.running,
+.run-status.queued {
+  color: #1957d2;
+  background: #edf4ff;
+}
+
+.run-status.skipped {
+  color: #667085;
+  background: #eef2f6;
+}
+
+.run-card p {
+  max-height: 140px;
+  overflow: auto;
+  margin: 8px 0 0;
+  color: #344054;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
 }
 
 .usage-panel input[type="range"] {

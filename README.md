@@ -1,32 +1,39 @@
-# Atlas Dev Hub
+# 🌌 VOID — Atlas Dev Hub
 
-Local development orchestrator for Atlas work.
+**Локальный оркестратор ИИ-агентов и пульт управления разработкой.**
 
-## What It Does
+VOID (`atlas-dev-hub`) — это полноценный локальный командный центр (AI Orchestration Engine), созданный для координации независимых ИИ-моделей в единую рабочую экосистему. Проект управляет разработкой основного продукта — локального ассистента **Atlas v0**.
 
-- Starts Codex CLI background tasks in isolated worktrees.
-- Starts Claude Code background tasks in isolated worktrees.
-- Reads the shared agent bus and run logs.
-- Stores Kimi and Perplexity API settings in local app data, outside the repo.
-- Lets Kimi and Perplexity answer research or review prompts through API keys.
-- Adds a conservative usage guard so heavy work pauses around 70-80% session usage.
+---
 
-## Boundaries
+## 🚀 Главная концепция системы
 
-- Atlas itself stays in `../atlas-v0`.
-- Dev Hub is a separate tool in `../atlas-dev-hub`.
-- This app can later edit itself by creating Dev Hub branches and worktrees, the same way it coordinates Atlas branches.
-- Frontend changes can hot-reload through Vite. Tauri/Rust command changes usually need an app restart.
-- Detailed worker observability comes from process status, run logs, git diffs, and file watchers. Exact internal file reads depend on what each CLI exposes.
+Вместо того чтобы работать с нейросетями в обычных чатах, этот оркестратор распределяет задачи между четырьмя специализированными агентами, которые общаются через единую шину данных (`agent bus`) и изолированные рабочие папки (`git worktrees`):
 
-## Start
+*   **🎙️ CLAUDE (Conductor / Дирижёр):** Удерживает контекст всей проблемы, проводит ревью кода, ищет архитектурные риски и предлагает UI/UX улучшения.
+*   **💻 CODEX (Architect / Ведущий разработчик):** Принимает стратегические решения, делает точечные правки кода, запускает тесты и выполняет финальное слияние (`merge`) проверенных фич.
+*   **🔍 PERPLEXITY (Scout / Разведчик):** Сканирует интернет, проверяет актуальную документацию библиотек и приносит свежие внешние решения.
+*   **🧠 KIMI (Scribe / Аналитик):** Работает с гигантскими объёмами данных, анализирует большие архитектурные планы и дает экспертное «второе мнение».
 
-From the workspace root, run:
+---
 
-```powershell
-.\Start Atlas Dev Hub.cmd
-```
+## 🛠️ Что под капотом (Архитектурные фичи)
 
-## Russian Guide
+*   **Безопасность Git Worktrees:** Агенты не ломают основную папку проекта. Для каждого задания создается скрытая изолированная ветка, где ИИ пишет код и запускает сборку (`npm run build`, `cargo check`).
+*   **Usage Guard (70-80%):** Встроенный ручной предохранитель токенов. Система мониторит нагрузку сессии и автоматически блокирует тяжелые операции записи, если лимит близок к исчерпанию, оставляя запас на экстренные фиксы.
+*   **Полная обсервабилити:** Вывод процессов в реальном времени через `Run Log` по индивидуальным `RUN_ID`, общая лента системных событий и изоляция API-ключей на локальной машине пользователя (`%LOCALAPPDATA%`).
 
-See `USER_GUIDE_RU.md` for the full migration and connection guide.
+---
+
+## 📦 Стек технологий
+
+*   **Frontend:** React, TypeScript, Tailwind CSS, Vite (с поддержкой Hot-Reload)
+*   **Desktop Shell:** Tauri (Rust) для сборки легковесного нативного приложения под Windows
+*   **AI Layer:** OpenAI API / Moonshot API / Perplexity API / Claude CLI
+
+---
+
+## 📈 План развития (Next Steps)
+1. Добавление вкладки **Live Diff** прямо в интерфейс для визуального контроля правок ИИ перед мерджем.
+2. Интеграция шифрования ключей через системный **Windows Credential Manager**.
+3. Создание интерактивного дерева процессов и графиков затрат токенов по каждому агенту.

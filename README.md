@@ -1,4 +1,4 @@
-![VOID Live Interface](VOID.jpg)
+![VOID Live Interface](VOID.png)
 
 
 

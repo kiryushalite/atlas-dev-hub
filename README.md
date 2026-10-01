@@ -1,4 +1,6 @@
-![VOID Live Interface]((629A10F3-33E9-4331-ACCD-5530392D7A75).png)
+<img src="%28214CFB9A-105D-4EB0-8376-CDD1BE6251EB%29.png" alt="VOID Live Interface" width="100%" />
+
+
 
 # 🌌 VOID — Atlas Dev Hub
 

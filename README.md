@@ -1,5 +1,5 @@
 <div align="center" style="overflow-x: auto; max-width: 100%;">
-  <img src="void-hd.png" alt="VOID Live Interface" style="min-width: 1200px; width: 100%; height: auto; display: block;" />
+  <img src="VOID.png" alt="VOID Live Interface" style="min-width: 1200px; width: 100%; height: auto; display: block;" />
 </div>
 
 
